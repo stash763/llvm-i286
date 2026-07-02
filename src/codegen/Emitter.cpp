@@ -90,13 +90,30 @@ std::string Emitter::emitModule(const std::string& moduleName,
     output += "stdin\t\tequ 0\n";
     output += "stdout\t\tequ 1\n\n";
     
-    // Group data segments
-    output += "group DGROUP _DATA\n\n";
+    // Group data segments (DATA + BSS)
+    output += "group DGROUP _DATA _BSS\n\n";
     
     // External OS/2 API calls
     output += "        extern  DOSEXIT\n";
     output += "\t        extern  DOSWRITE\n";
     output += "\t        extern  DOSREAD\n";
+    output += "\t        extern  DOSOPEN\n";
+    output += "\t        extern  DOSCLOSE\n";
+    output += "\t        extern  DOSCHGFILEPTR\n";
+    output += "\t        extern  DOSGETPID\n";
+    output += "\t        extern  DOSGETDATETIME\n";
+    output += "\t        extern  DOSSLEEP\n";
+    output += "\t        extern  DOSALLOCSEG\n";
+    output += "\t        extern  DOSFREESEG\n";
+    output += "\t        extern  DOSDELETE\n";
+    output += "\t        extern  DOSMKDIR\n";
+    output += "\t        extern  DOSRMDIR\n";
+    output += "\t        extern  DOSCHDIR\n";
+    output += "\t        extern  DOSGETCURRENTDIR\n";
+    output += "\t        extern  DOSMOVE\n";
+    output += "\t        extern  DOSQFILEINFO\n";
+    output += "\t        extern  DOSDUPHANDLE\n";
+    output += "\t        extern  DOSMAKEPIPE\n";
     
     // External function declarations
     for (const auto& func : externFuncs) {
@@ -104,7 +121,7 @@ std::string Emitter::emitModule(const std::string& moduleName,
     }
     output += "\n";
     
-    // Data segment
+    // Data segment (initialized data)
     output += "segment _DATA CLASS=DATA\n\n";
     if (!dataSegment.empty()) {
         output += dataSegment;
@@ -112,6 +129,13 @@ std::string Emitter::emitModule(const std::string& moduleName,
     // Always add standard data variables
     output += "rlen\t\tdw 0\n";
     output += "wlen\t\tdw 0\n";
+    output += "\n";
+    
+    // BSS segment (uninitialized data)
+    output += "segment _BSS CLASS=BSS\n\n";
+    if (!bssSegment.empty()) {
+        output += bssSegment;
+    }
     output += "\n";
     
     // Stack segment
@@ -152,10 +176,7 @@ std::string Emitter::emitModule(const std::string& moduleName,
         output += "       call\tfar DOSEXIT\n";
     }
     
-    // Runtime routines are provided by the runtime library (runtime.lib)
-    // See runtime/ directory for printnum, __mul32, __div32
-    
-    output += "segment _DATA\n";
+    // End segments
     output += "\n";
     output += "segment end\n";
     

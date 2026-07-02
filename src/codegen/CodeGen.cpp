@@ -91,20 +91,40 @@ std::string CodeGen::generate(const ir::Module& module) {
         }
     }
     
-    // Generate data segment for global variables (string constants)
+    // Generate data segment for global variables (initialized data)
     std::string dataSegment;
+    std::string bssSegment;
+    
     for (const auto& gv : module.globals) {
-        if (gv->isConstant && gv->initializer) {
-            std::string dataLabel = gv->name;
-            // NASM treats labels starting with '.' as local labels
-            // Prefix with '_' to make them global
-            if (!dataLabel.empty() && dataLabel[0] == '.') {
-                dataLabel = "_" + dataLabel.substr(1);
+        std::string dataLabel = gv->name;
+        // NASM treats labels starting with '.' as local labels
+        // Prefix with '_' to make them global
+        if (!dataLabel.empty() && dataLabel[0] == '.') {
+            dataLabel = "_" + dataLabel.substr(1);
+        }
+        
+        // Check if this is an uninitialized global (BSS)
+        bool isBSS = !gv->initializer || (gv->initializer && gv->initializer->kind == ir::ValueKind::ConstantZeroInitializer);
+        
+        if (isBSS) {
+            // BSS segment: uninitialized data
+            int byteSize = 2; // Default to 2 bytes (16-bit)
+            if (gv->type) {
+                if (gv->type->isInteger()) {
+                    byteSize = gv->type->bitWidth / 8;
+                    if (byteSize < 2) byteSize = 2; // Minimum 2 bytes
+                } else if (gv->type->isPointer()) {
+                    byteSize = 4; // 32-bit pointer
+                }
             }
+            
+            bssSegment += dataLabel + ":\n";
+            bssSegment += "\tresb " + std::to_string(byteSize) + "\n\n";
+        } else if (gv->isConstant && gv->initializer) {
+            // Initialized constant data (e.g., string constants)
             std::string initData = gv->initializer->text;
             
             // Convert LLVM string constant to NASM format
-            // LLVM: c"Result: %d\0A\00" -> NASM: db "Result: %d", 0x0A, 0x00, 0
             if (initData.size() >= 2 && initData[0] == 'c' && initData[1] == '"') {
                 // Remove c" prefix and " suffix
                 std::string strContent = initData.substr(2, initData.size() - 3);
@@ -113,7 +133,7 @@ std::string CodeGen::generate(const ir::Module& module) {
                 std::string parts;
                 std::string current;
                 
-             for (size_t i = 0; i < strContent.size(); i++) {
+                for (size_t i = 0; i < strContent.size(); i++) {
                     if (strContent[i] == '\\' && i + 1 < strContent.size()) {
                         // Flush current string
                         if (!current.empty()) {
@@ -123,8 +143,6 @@ std::string CodeGen::generate(const ir::Module& module) {
                         }
                         
                         char next = strContent[i + 1];
-                        if (i + 3 < strContent.size()) {
-                        }
                         if (next == 'n' || (next == '0' && i + 3 < strContent.size() && strContent[i + 2] == 'A')) {
                             if (!parts.empty()) parts += ", ";
                             parts += "0x0A";
@@ -144,7 +162,6 @@ std::string CodeGen::generate(const ir::Module& module) {
                                 std::string hexStr = "0x0";
                                 hexStr += third;
                                 parts += hexStr;
-                                std::cerr << "DEBUG: hex escape \\0" << third << " at pos " << i << std::endl;
                                 i += 1; // Skip extra char (the hex digit)
                             } else {
                                 if (!parts.empty()) parts += ", ";
@@ -174,18 +191,62 @@ std::string CodeGen::generate(const ir::Module& module) {
                 
                 dataSegment += dataLabel + ":\n";
                 dataSegment += "\tdb " + parts + ", 0\n\n";
+            } else {
+                // Other initialized constants (integers, etc.)
+                int byteSize = 2; // Default to 2 bytes
+                if (gv->type) {
+                    if (gv->type->isInteger()) {
+                        byteSize = gv->type->bitWidth / 8;
+                        if (byteSize < 2) byteSize = 2;
+                    }
+                }
+                
+                std::string initValue = gv->initializer->text;
+                
+                dataSegment += dataLabel + ":\n";
+                if (byteSize == 4) {
+                    dataSegment += "\tdd " + initValue + "\n\n"; // 32-bit dword
+                } else {
+                    dataSegment += "\tdw " + initValue + "\n\n"; // 16-bit word
+                }
+            }
+        } else if (gv->initializer) {
+            // Initialized non-constant global (data segment)
+            int byteSize = 2;
+            if (gv->type) {
+                if (gv->type->isInteger()) {
+                    byteSize = gv->type->bitWidth / 8;
+                    if (byteSize < 2) byteSize = 2;
+                } else if (gv->type->isPointer()) {
+                    byteSize = 4;
+                }
+            }
+            
+            std::string initValue = gv->initializer->text;
+            
+            dataSegment += dataLabel + ":\n";
+            if (byteSize == 4) {
+                dataSegment += "\tdd " + initValue + "\n\n";
+            } else {
+                dataSegment += "\tdw " + initValue + "\n\n";
             }
         }
     }
     
+    // Add runtime library functions to extern list
+    externFuncs.push_back("_MultiplyI32");
+    externFuncs.push_back("_DivideI32");
+    externFuncs.push_back("_DivideU32");
+    externFuncs.push_back("_ShiftL32");
+    externFuncs.push_back("_ShiftR32");
+    externFuncs.push_back("_ShiftAr32");
+    
     // Wrap in module structure
-    // entryFuncName non-empty: ..start: calls entry function, then exits
-    // entryFuncName empty: code emitted directly at ..start:
     return emitter.emitModule(
         module.sourceFilename.empty() ? "output" : module.sourceFilename,
         allFunctions,
         dataSegment, // data segment
-        "", // bss segment
+        bssSegment, // bss segment
         entryFuncName,
         externFuncs
     );

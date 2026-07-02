@@ -147,6 +147,102 @@ struct InstructionSelector::Impl {
         currentStackOffset -= byteSize;
         return currentStackOffset;
     }
+    
+    // ========================================================================
+    // 32-bit Load/Store Helpers
+    // ========================================================================
+    
+    // Load a 32-bit value from stack/memory into AX:DX (AX=low, DX=high)
+    std::vector<Instruction286> load32Bit(const std::string& vregName) {
+        std::vector<Instruction286> insts;
+        std::string physReg = getPhysReg(vregName);
+        
+        Instruction286 loadLow;
+        loadLow.mnemonic = "mov";
+        loadLow.operands.push_back("ax");
+        loadLow.operands.push_back("[" + physReg + "]");
+        insts.push_back(loadLow);
+        
+        Instruction286 loadHigh;
+        loadHigh.mnemonic = "mov";
+        loadHigh.operands.push_back("dx");
+        // Calculate high word offset
+        if (physReg.find("bp") != std::string::npos) {
+            int offset = 0;
+            std::string offsetStr = physReg.substr(physReg.find("bp") + 2);
+            if (!offsetStr.empty()) {
+                try { offset = std::stoi(offsetStr); } catch (...) {}
+            }
+            int newOffset = offset + 2;
+            std::string offsetStr2 = (newOffset >= 0) ? ("+" + std::to_string(newOffset)) : std::to_string(newOffset);
+            loadHigh.operands.push_back("[" + std::string("bp") + offsetStr2 + "]");
+        } else {
+            loadHigh.operands.push_back("[" + physReg + "+2]");
+        }
+        insts.push_back(loadHigh);
+        
+        return insts;
+    }
+    
+    // Store a 32-bit value from AX:DX to a stack/memory location
+    std::vector<Instruction286> store32Bit(const std::string& vregName) {
+        std::vector<Instruction286> insts;
+        std::string physReg = getPhysReg(vregName);
+        
+        Instruction286 storeLow;
+        storeLow.mnemonic = "mov";
+        storeLow.operands.push_back("[" + physReg + "]");
+        storeLow.operands.push_back("ax");
+        insts.push_back(storeLow);
+        
+        Instruction286 storeHigh;
+        storeHigh.mnemonic = "mov";
+        // Calculate high word offset
+        if (physReg.find("bp") != std::string::npos) {
+            int offset = 0;
+            std::string offsetStr = physReg.substr(2);
+            if (!offsetStr.empty()) {
+                try { offset = std::stoi(offsetStr); } catch (...) {}
+            }
+            int newOffset = offset + 2;
+            std::string offsetStr2 = (newOffset >= 0) ? ("+" + std::to_string(newOffset)) : std::to_string(newOffset);
+            storeHigh.operands.push_back("[" + std::string("bp") + offsetStr2 + "]");
+        } else {
+            storeHigh.operands.push_back("[" + physReg + "+2]");
+        }
+        storeHigh.operands.push_back("dx");
+        insts.push_back(storeHigh);
+        
+        return insts;
+    }
+    
+    // Allocate stack space for a 32-bit value and return the bp-relative string
+    std::string alloc32BitStack(const std::string& vregName) {
+        int offset = allocateStack(4);
+        vregToStackOffset[vregName] = offset;
+        mark32Bit(vregName);
+        
+        std::string stackReg = "bp" + std::to_string(offset);
+        
+        // Emit sub sp, 4
+        Instruction286 subSp;
+        subSp.mnemonic = "sub";
+        subSp.operands.push_back("sp");
+        subSp.operands.push_back("4");
+        
+        return stackReg;
+    }
+    
+    // Check if an operand name is a constant (parseable as integer)
+    bool isConstant(const std::string& name) {
+        if (name.empty()) return false;
+        try {
+            std::stoi(name);
+            return true;
+        } catch (...) {
+            return false;
+        }
+    }
 };
 
 InstructionSelector::InstructionSelector() : impl(std::make_unique<Impl>()) {}
@@ -1865,6 +1961,494 @@ std::vector<LoweredInstruction> InstructionSelector::lowerInstruction(const ir::
                 
                 if (!irInst.resultName.empty()) {
                     impl->updateResultReg(irInst.resultName, destReg);
+                }
+            }
+            break;
+        }
+        
+        // ====================================================================
+        // Division and Remainder Operations
+        // ====================================================================
+        
+        case ir::Opcode::SDiv:
+        case ir::Opcode::UDiv:
+        case ir::Opcode::SRem:
+        case ir::Opcode::URem: {
+            // Division and remainder operations
+            // 80286 IDIV/DIV: AX = dividend, divisor in operand
+            // Result: AX = quotient, DX = remainder
+            bool is32 = irInst.resultType && irInst.resultType->bitWidth == 32;
+            
+            if (irInst.operands.size() >= 2) {
+                std::string dividentName = irInst.operands[0].name;
+                std::string divisorName = irInst.operands[1].name;
+                
+                if (is32) {
+                    // 32-bit division: DX:AX / operand
+                    // Load dividend low word to AX, high word to DX
+                    auto dividendLoads = impl->load32Bit(dividentName);
+                    lowered.instructions.insert(lowered.instructions.end(), dividendLoads.begin(), dividendLoads.end());
+                    
+                    // Load divisor
+                    std::string divisorReg = impl->getPhysReg(divisorName);
+                    if (divisorReg.find("bp") != std::string::npos) {
+                        Instruction286 loadDivisor;
+                        loadDivisor.mnemonic = "mov";
+                        loadDivisor.operands.push_back("cx");
+                        loadDivisor.operands.push_back("[" + divisorReg + "]");
+                        lowered.instructions.push_back(loadDivisor);
+                    } else if (divisorReg != "cx") {
+                        Instruction286 movDivisor;
+                        movDivisor.mnemonic = "mov";
+                        movDivisor.operands.push_back("cx");
+                        movDivisor.operands.push_back(divisorReg);
+                        lowered.instructions.push_back(movDivisor);
+                    }
+                    
+                    // For 32-bit division, we need to use a runtime helper
+                    // This is a placeholder - will call _DivideI32 or _DivideU32
+                    Instruction286 callDiv;
+                    callDiv.mnemonic = "call";
+                    callDiv.operands.push_back(irInst.opcode == ir::Opcode::SDiv ? "_DivideI32" : "_DivideU32");
+                    lowered.instructions.push_back(callDiv);
+                    
+                    // Result: DX:AX (DX=high, AX=low)
+                    if (!irInst.resultName.empty()) {
+                        std::string resultStack = impl->alloc32BitStack(irInst.resultName);
+                        auto storeInsts = impl->store32Bit(irInst.resultName);
+                        lowered.instructions.insert(lowered.instructions.end(), storeInsts.begin(), storeInsts.end());
+                        impl->vregToPhys[irInst.resultName] = resultStack;
+                    }
+                } else {
+                    // 16-bit division
+                    // Load dividend to AX
+                    std::string dividentReg = impl->getPhysReg(dividentName);
+                    if (dividentReg.find("bp") != std::string::npos) {
+                        Instruction286 loadDividend;
+                        loadDividend.mnemonic = "mov";
+                        loadDividend.operands.push_back("ax");
+                        loadDividend.operands.push_back("[" + dividentReg + "]");
+                        lowered.instructions.push_back(loadDividend);
+                    } else if (dividentReg != "ax") {
+                        Instruction286 movDividend;
+                        movDividend.mnemonic = "mov";
+                        movDividend.operands.push_back("ax");
+                        movDividend.operands.push_back(dividentReg);
+                        lowered.instructions.push_back(movDividend);
+                    }
+                    
+                    // Load divisor to CX
+                    std::string divisorReg = impl->getPhysReg(divisorName);
+                    if (divisorReg.find("bp") != std::string::npos) {
+                        Instruction286 loadDivisor;
+                        loadDivisor.mnemonic = "mov";
+                        loadDivisor.operands.push_back("cx");
+                        loadDivisor.operands.push_back("[" + divisorReg + "]");
+                        lowered.instructions.push_back(loadDivisor);
+                    } else if (divisorReg != "cx") {
+                        Instruction286 movDivisor;
+                        movDivisor.mnemonic = "mov";
+                        movDivisor.operands.push_back("cx");
+                        movDivisor.operands.push_back(divisorReg);
+                        lowered.instructions.push_back(movDivisor);
+                    }
+                    
+                    // Clear DX for unsigned division, sign-extend for signed
+                    if (irInst.opcode == ir::Opcode::SDiv || irInst.opcode == ir::Opcode::SRem) {
+                        Instruction286 cwd;
+                        cwd.mnemonic = "cwd"; // Sign-extend AX to DX:AX
+                        lowered.instructions.push_back(cwd);
+                    } else {
+                        Instruction286 xorDx;
+                        xorDx.mnemonic = "xor";
+                        xorDx.operands.push_back("dx");
+                        xorDx.operands.push_back("dx");
+                        lowered.instructions.push_back(xorDx);
+                    }
+                    
+                    // Perform division
+                    Instruction286 divInst;
+                    divInst.mnemonic = irInst.opcode == ir::Opcode::SDiv || irInst.opcode == ir::Opcode::SRem ? "idiv" : "div";
+                    divInst.operands.push_back("cx");
+                    lowered.instructions.push_back(divInst);
+                    
+                    // Result: For div/rem, quotient in AX, remainder in DX
+                    // Store result based on operation type
+                    std::string resultReg = (irInst.opcode == ir::Opcode::SDiv || irInst.opcode == ir::Opcode::UDiv) ? "ax" : "dx";
+                    
+                    if (!irInst.resultName.empty()) {
+                        impl->updateResultReg(irInst.resultName, resultReg);
+                    }
+                }
+            }
+            break;
+        }
+        
+        // ====================================================================
+        // Floating Point Operations (80287 FPU)
+        // ====================================================================
+        
+        case ir::Opcode::FAdd:
+        case ir::Opcode::FSub:
+        case ir::Opcode::FMul:
+        case ir::Opcode::FDiv: {
+            // FPU arithmetic operations
+            // 80287 FPU uses a register stack ST(0)-ST(7)
+            if (irInst.operands.size() >= 2) {
+                std::string op1Name = irInst.operands[0].name;
+                std::string op2Name = irInst.operands[1].name;
+                
+                // Load op1 to ST(0) if not already there
+                // For now, assume operands are already in FPU registers or memory
+                // This is a simplified version - full implementation would track FPU stack
+                
+                // Perform operation
+                Instruction286 fpuInst;
+                switch (irInst.opcode) {
+                    case ir::Opcode::FAdd: fpuInst.mnemonic = "fadd"; break;
+                    case ir::Opcode::FSub: fpuInst.mnemonic = "fsub"; break;
+                    case ir::Opcode::FMul: fpuInst.mnemonic = "fmul"; break;
+                    case ir::Opcode::FDiv: fpuInst.mnemonic = "fdiv"; break;
+                    default: break;
+                }
+                
+                // If both operands are vregs, load second operand and operate
+                if (irInst.operands.size() >= 2) {
+                    std::string op2Reg = impl->getPhysReg(op2Name);
+                    if (op2Reg.find("bp") != std::string::npos) {
+                        fpuInst.operands.push_back("[" + op2Reg + "]");
+                    } else {
+                        fpuInst.operands.push_back(op2Reg);
+                    }
+                }
+                
+                lowered.instructions.push_back(fpuInst);
+                
+                // Result is in ST(0)
+                // For now, we'll store it to memory and reload when needed
+                // Full implementation would track FPU register assignments
+            }
+            break;
+        }
+        
+        case ir::Opcode::FRem: {
+            // FPU remainder
+            if (!irInst.operands.empty()) {
+                std::string op2Name = irInst.operands[0].name;
+                std::string op2Reg = impl->getPhysReg(op2Name);
+                
+                Instruction286 fprem;
+                fprem.mnemonic = "fprem";
+                if (op2Reg.find("bp") != std::string::npos) {
+                    fprem.operands.push_back("[" + op2Reg + "]");
+                } else {
+                    fprem.operands.push_back(op2Reg);
+                }
+                lowered.instructions.push_back(fprem);
+            }
+            break;
+        }
+        
+        case ir::Opcode::FCmp: {
+            // FPU comparison
+            if (irInst.operands.size() >= 2) {
+                std::string op1Name = irInst.operands[0].name;
+                std::string op2Name = irInst.operands[1].name;
+                
+                // Load op1 to ST(0) if needed
+                std::string op1Reg = impl->getPhysReg(op1Name);
+                if (op1Reg.find("bp") != std::string::npos) {
+                    Instruction286 fld;
+                    fld.mnemonic = "fld";
+                    fld.operands.push_back("[" + op1Reg + "]");
+                    lowered.instructions.push_back(fld);
+                }
+                
+                // Compare with op2
+                std::string op2Reg = impl->getPhysReg(op2Name);
+                Instruction286 fcom;
+                fcom.mnemonic = "fcom";
+                if (op2Reg.find("bp") != std::string::npos) {
+                    fcom.operands.push_back("[" + op2Reg + "]");
+                } else {
+                    fcom.operands.push_back(op2Reg);
+                }
+                lowered.instructions.push_back(fcom);
+                
+                // Store status word and test
+                Instruction286 fstsw;
+                fstsw.mnemonic = "fstsw";
+                fstsw.operands.push_back("ax");
+                lowered.instructions.push_back(fstsw);
+                
+                Instruction286 sahf;
+                sahf.mnemonic = "sahf";
+                lowered.instructions.push_back(sahf);
+                
+                // Result: flags set based on comparison
+                // This is simplified - full implementation would handle predicate
+            }
+            break;
+        }
+        
+        case ir::Opcode::FPTrunc:
+        case ir::Opcode::FPExt: {
+            // FPU conversion (double->float or float->double)
+            // For 80287, all operations use 80-bit extended precision
+            // Truncation to float: store as 32-bit
+            // Extension to double: store as 64-bit
+            if (!irInst.operands.empty()) {
+                std::string opReg = impl->getPhysReg(irInst.operands[0].name);
+                
+                // Store to memory with appropriate size
+                // This is a placeholder - full implementation would handle FPU stack
+                Instruction286 fstp;
+                fstp.mnemonic = "fstp";
+                if (irInst.opcode == ir::Opcode::FPTrunc) {
+                    fstp.operands.push_back("dword"); // 32-bit float
+                } else {
+                    fstp.operands.push_back("qword"); // 64-bit double
+                }
+                if (opReg.find("bp") != std::string::npos) {
+                    fstp.operands.push_back("[" + opReg + "]");
+                } else {
+                    fstp.operands.push_back(opReg);
+                }
+                lowered.instructions.push_back(fstp);
+            }
+            break;
+        }
+        
+        case ir::Opcode::FPToUI:
+        case ir::Opcode::FPToSI: {
+            // FPU to integer conversion
+            if (!irInst.operands.empty()) {
+                std::string opReg = impl->getPhysReg(irInst.operands[0].name);
+                
+                Instruction286 fistp;
+                fistp.mnemonic = irInst.opcode == ir::Opcode::FPToUI ? "fistp" : "fistp";
+                fistp.operands.push_back("dword"); // 32-bit integer
+                if (opReg.find("bp") != std::string::npos) {
+                    fistp.operands.push_back("[" + opReg + "]");
+                } else {
+                    fistp.operands.push_back(opReg);
+                }
+                lowered.instructions.push_back(fistp);
+                
+                // Result in AX
+                if (!irInst.resultName.empty()) {
+                    impl->updateResultReg(irInst.resultName, "ax");
+                }
+            }
+            break;
+        }
+        
+        case ir::Opcode::UIToFP:
+        case ir::Opcode::SIToFP: {
+            // Integer to FPU conversion
+            if (!irInst.operands.empty()) {
+                std::string opReg = impl->getPhysReg(irInst.operands[0].name);
+                
+                Instruction286 fild;
+                fild.mnemonic = "fild";
+                fild.operands.push_back("dword"); // 32-bit integer
+                if (opReg.find("bp") != std::string::npos) {
+                    fild.operands.push_back("[" + opReg + "]");
+                } else {
+                    fild.operands.push_back(opReg);
+                }
+                lowered.instructions.push_back(fild);
+                // Result in ST(0)
+            }
+            break;
+        }
+        
+        // ====================================================================
+        // Control Flow and Other Operations
+        // ====================================================================
+        
+        case ir::Opcode::Switch: {
+            // Switch statement - emit as chained comparisons
+            if (irInst.operands.size() >= 1) {
+                std::string condReg = impl->getPhysReg(irInst.operands[0].name);
+                
+                // Load condition to AX
+                if (condReg.find("bp") != std::string::npos) {
+                    Instruction286 loadCond;
+                    loadCond.mnemonic = "mov";
+                    loadCond.operands.push_back("ax");
+                    loadCond.operands.push_back("[" + condReg + "]");
+                    lowered.instructions.push_back(loadCond);
+                } else if (condReg != "ax") {
+                    Instruction286 movCond;
+                    movCond.mnemonic = "mov";
+                    movCond.operands.push_back("ax");
+                    movCond.operands.push_back(condReg);
+                    lowered.instructions.push_back(movCond);
+                }
+                
+                // Emit case comparisons
+                std::string defaultLabel = "bb_" + irInst.operands[0].name; // Default case
+                std::string endLabel = impl->nextLabel(".Lswitch_end_");
+                
+                for (size_t i = 1; i < irInst.operands.size(); i += 2) {
+                    std::string caseValue = irInst.operands[i].name;
+                    std::string caseLabel = irInst.operands[i + 1].name;
+                    
+                    Instruction286 cmpInst;
+                    cmpInst.mnemonic = "cmp";
+                    cmpInst.operands.push_back("ax");
+                    cmpInst.operands.push_back(caseValue);
+                    lowered.instructions.push_back(cmpInst);
+                    
+                    Instruction286 jmpCase;
+                    jmpCase.mnemonic = "je";
+                    jmpCase.operands.push_back("bb_" + caseLabel);
+                    lowered.instructions.push_back(jmpCase);
+                }
+                
+                // Jump to default
+                Instruction286 jmpDefault;
+                jmpDefault.mnemonic = "jmp";
+                jmpDefault.operands.push_back(defaultLabel);
+                lowered.instructions.push_back(jmpDefault);
+                
+                // End label
+                LoweredInstruction endLabelInst;
+                endLabelInst.label = endLabel;
+                loweredVec.push_back(lowered);
+                lowered = LoweredInstruction{};
+                loweredVec.push_back(endLabelInst);
+            }
+            break;
+        }
+        
+        case ir::Opcode::Phi: {
+            // Phi nodes are handled at the basic block level, not here
+            // This is a no-op in instruction selection
+            break;
+        }
+        
+        case ir::Opcode::Unreachable: {
+            // Emit a halt or trap instruction
+            Instruction286 hlt;
+            hlt.mnemonic = "hlt";
+            hlt.comment = "unreachable";
+            lowered.instructions.push_back(hlt);
+            break;
+        }
+        
+        case ir::Opcode::BitCast:
+        case ir::Opcode::PtrToInt:
+        case ir::Opcode::IntToPtr: {
+            // No-op for same-size types on 80286
+            // Just copy the value
+            if (!irInst.operands.empty()) {
+                std::string srcReg = impl->getPhysReg(irInst.operands[0].name);
+                
+                if (srcReg.find("bp") != std::string::npos) {
+                    Instruction286 loadInst;
+                    loadInst.mnemonic = "mov";
+                    loadInst.operands.push_back("ax");
+                    loadInst.operands.push_back("[" + srcReg + "]");
+                    lowered.instructions.push_back(loadInst);
+                } else if (srcReg != "ax") {
+                    Instruction286 movInst;
+                    movInst.mnemonic = "mov";
+                    movInst.operands.push_back("ax");
+                    movInst.operands.push_back(srcReg);
+                    lowered.instructions.push_back(movInst);
+                }
+                
+                if (!irInst.resultName.empty()) {
+                    impl->updateResultReg(irInst.resultName, "ax");
+                }
+            }
+            break;
+        }
+        
+        case ir::Opcode::ExtractValue: {
+            // Extract value from struct
+            // For now, treat as a load from an offset
+            if (!irInst.operands.empty()) {
+                std::string aggReg = impl->getPhysReg(irInst.operands[0].name);
+                
+                // Calculate offset based on indices
+                int offset = 0;
+                // This is simplified - full implementation would calculate struct offsets
+                for (size_t i = 1; i < irInst.operands.size(); i++) {
+                    try {
+                        offset += std::stoi(irInst.operands[i].name) * 2; // Assume 16-bit fields
+                    } catch (...) {}
+                }
+                
+                Instruction286 loadInst;
+                loadInst.mnemonic = "mov";
+                loadInst.operands.push_back("ax");
+                if (aggReg.find("bp") != std::string::npos) {
+                    loadInst.operands.push_back("[" + aggReg + "+" + std::to_string(offset) + "]");
+                } else {
+                    loadInst.operands.push_back("[" + aggReg + "+" + std::to_string(offset) + "]");
+                }
+                lowered.instructions.push_back(loadInst);
+                
+                if (!irInst.resultName.empty()) {
+                    impl->updateResultReg(irInst.resultName, "ax");
+                }
+            }
+            break;
+        }
+        
+        case ir::Opcode::InsertValue: {
+            // Insert value into struct
+            if (irInst.operands.size() >= 2) {
+                std::string aggReg = impl->getPhysReg(irInst.operands[0].name);
+                std::string valReg = impl->getPhysReg(irInst.operands[1].name);
+                
+                // Calculate offset
+                int offset = 0;
+                for (size_t i = 2; i < irInst.operands.size(); i++) {
+                    try {
+                        offset += std::stoi(irInst.operands[i].name) * 2;
+                    } catch (...) {}
+                }
+                
+                // Store value to offset
+                Instruction286 storeInst;
+                storeInst.mnemonic = "mov";
+                if (aggReg.find("bp") != std::string::npos) {
+                    storeInst.operands.push_back("[" + aggReg + "+" + std::to_string(offset) + "]");
+                } else {
+                    storeInst.operands.push_back("[" + aggReg + "+" + std::to_string(offset) + "]");
+                }
+                storeInst.operands.push_back(valReg);
+                lowered.instructions.push_back(storeInst);
+            }
+            break;
+        }
+        
+        case ir::Opcode::Freeze: {
+            // Freeze is a no-op for initial port
+            // Just copy the value
+            if (!irInst.operands.empty()) {
+                std::string srcReg = impl->getPhysReg(irInst.operands[0].name);
+                
+                if (srcReg.find("bp") != std::string::npos) {
+                    Instruction286 loadInst;
+                    loadInst.mnemonic = "mov";
+                    loadInst.operands.push_back("ax");
+                    loadInst.operands.push_back("[" + srcReg + "]");
+                    lowered.instructions.push_back(loadInst);
+                } else if (srcReg != "ax") {
+                    Instruction286 movInst;
+                    movInst.mnemonic = "mov";
+                    movInst.operands.push_back("ax");
+                    movInst.operands.push_back(srcReg);
+                    lowered.instructions.push_back(movInst);
+                }
+                
+                if (!irInst.resultName.empty()) {
+                    impl->updateResultReg(irInst.resultName, "ax");
                 }
             }
             break;
