@@ -1,0 +1,59 @@
+# ============================
+# Build Directories
+# ============================
+build/
+antlr4_build/
+antlr4/runtime/Cpp/build/
+antlr4/tool/target/
+2ine_debugger/build/
+
+# ============================
+# Compiled Artifacts
+# ============================
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.dll
+*.exe
+
+# Runtime compiled artifacts
+runtime/*.obj
+runtime/*.lib
+runtime/runtime.bak
+
+# ============================
+# Test Output Build Artifacts
+# (Keep .ll and .c source files)
+# ============================
+tests/output/*.asm
+tests/output/*.o
+tests/output/*.exe
+tests/output/*.lst
+tests/output/*.bak
+tests/output/clang_generated/
+tests/output/function_with_params/
+tests/output/i16_*/
+tests/output/multiple_functions/
+tests/output/multiple_ops/
+tests/output/return_constant/
+tests/output/simple_return_0/
+
+# ============================
+# Generated Files
+# ============================
+output.asm
+
+# ============================
+# IDE Files
+# ============================
+.idea/
+*.swp
+*.swo
+*~
+
+# ============================
+# Editor Backup Files
+# ============================
+*.MD~

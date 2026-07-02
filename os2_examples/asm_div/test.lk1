@@ -1,0 +1,6 @@
+system os2
+name test
+option map,protmode,nocaseexact
+debug codeview all
+file test.obj
+library d:\toolkit\lib\os2286

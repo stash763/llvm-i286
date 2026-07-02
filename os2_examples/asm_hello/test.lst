@@ -1,0 +1,55 @@
+     1                                  ; NASM example to create a 16-bit OS/2 segmented NE executable
+     2                                  
+     3                                  
+     4                                  BITS 16
+     5                                  
+     6                                  cr		equ 0x0d
+     7                                  lf		equ 0x0a
+     8                                  stdin		equ 0
+     9                                  stdout		equ 1
+    10                                  
+    11                                  group DGROUP _DATA
+    12                                  
+    13                                          	extern   DosExit
+    14                                  	        extern   DosRead
+    15                                  	        extern   DosWrite
+    16                                  
+    17                                  segment _DATA CLASS=DATA
+    18                                  
+    19 00000000 48656C6C6F20576F72-     msg1		db 'Hello Word',cr,lf
+    20 00000009 640D0A             
+    21                                  msg1_len	equ $-msg1
+    22                                  
+    23 0000000C 0000                    rlen		dw 0
+    24 0000000E 0000                    wlen		dw 0
+    25                                  
+    26                                  segment	STACK stack
+    27                                  		; this is defined in .def file
+    28                                  		;resw 1024
+    29                                  
+    30                                  
+    31                                  segment _TEXT CLASS=CODE
+    32                                  
+    33                                  ..start:
+    34                                                  ;  Add parameters to stack and then call OS
+    35                                                  
+    36 00000000 6A01                    		push 	stdout			; specifying stdout
+    37 00000002 1E                                      push	ds                      ; Address of string ds:address
+    38 00000003 68[0000]                		push	msg1
+    39 00000006 B90C00                                  mov	cx,msg1_len             ; length of string
+    40 00000009 51                                      push	cx
+    41 0000000A 1E                                      push	ds                      ; Address to store bytes written ds:address
+    42 0000000B 68[0E00]                                push	wlen
+    43 0000000E 9A[0000][0000]                          call    far DosWrite
+    44                                  
+    45                                  exit:
+    46 00000013 6A01                    		push    1               	; terminate process
+    47 00000015 6A00                    		push    0               	; return code
+    48 00000017 9A[0000][0000]                 	 	call	far DosExit
+    49                                  
+    50                                  segment _DATA
+    51                                  
+    52                                  segment end
+    53                                  
+    54                                  
+    55                                  

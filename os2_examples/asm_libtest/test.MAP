@@ -1,0 +1,80 @@
+Open Watcom Linker Version 1.9
+Portions Copyright (c) 1985-2002 Sybase, Inc. All Rights Reserved.
+Created on:       24/10/30 00:33:17
+Executable Image: test.exe
+creating an OS/2 16-bit executable
+
+
+                        +------------+
+                        |   Groups   |
+                        +------------+
+
+Group                           Address              Size
+=====                           =======              ====
+
+DGROUP                          0001:0000            0000002d
+
+
+
+                        +--------------+
+                        |   Segments   |
+                        +--------------+
+
+Segment                Class          Group          Address         Size
+=======                =====          =====          =======         ====
+
+_DATA                  DATA           DGROUP         0001:0000       0000002d
+STACK                  STACK          AUTO           0002:0000       00001000
+_TEXT                  CODE           AUTO           0003:0000       000001a1
+end                                   AUTO           0004:0000       00000000
+
+
+                        +----------------+
+                        |   Memory Map   |
+                        +----------------+
+
+* = unreferenced symbol
++ = symbol only referenced locally
+
+Address        Symbol
+=======        ======
+
+Module: test.obj(test.asm)
+0001:0021*     n1
+0001:0025*     n2
+0001:0029*     nresult
+Module: d:\code\llvm_lib\llvm.lib(mul.asm)
+0003:00ad      _MultiplyI32
+Module: d:\code\llvm_lib\llvm.lib(div.asm)
+0003:0111      _DivideI32
+
+
+                        +----------------------+
+                        |   Imported Symbols   |
+                        +----------------------+
+
+Symbol                              Module
+======                              ======
+
+DosExit                             DOSCALLS
+DosRead                             DOSCALLS
+DosWrite                            DOSCALLS
+DosAllocSeg                         DOSCALLS
+
+
+                        +--------------------+
+                        |   Libraries Used   |
+                        +--------------------+
+
+D:\WATCOM/lib286/os2\os2.lib
+d:\code\llvm_lib\llvm.lib
+
+
+                        +-----------------------+
+                        |   Linker Statistics   |
+                        +-----------------------+
+
+Stack size:  0000 (0.)
+Memory size:  11ce (4558.)
+Entry point address: 0003:0000
+Link time: 00:00.04

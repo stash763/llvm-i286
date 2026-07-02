@@ -1,0 +1,273 @@
+     1                                  ; NASM example to create a 16-bit OS/2 segmented NE executable
+     2                                  
+     3                                  
+     4                                  BITS 16
+     5                                  
+     6                                  cr		equ 0x0d
+     7                                  lf		equ 0x0a
+     8                                  stdin		equ 0
+     9                                  stdout		equ 1
+    10                                  true		equ 1
+    11                                  false		equ 0
+    12                                  
+    13                                  group DGROUP _DATA
+    14                                  
+    15                                          	extern   DosExit
+    16                                  	        extern   DosRead
+    17                                  	        extern   DosWrite
+    18                                                  extern	 DosAllocSeg
+    19                                  
+    20                                  
+    21                                  segment _DATA CLASS=DATA 			; Static data
+    22                                  
+    23 00000000 200D0A                  msg1		db ' ',cr,lf
+    24                                  msg1_len	equ $-msg1
+    25                                  
+    26 00000003 506F7369746976650D-     msg_pos		db 'Positive',cr,lf
+    27 0000000C 0A                 
+    28                                  msg_pos_len	equ $-msg_pos
+    29                                  
+    30 0000000D 4E656761746976650D-     msg_neg		db 'Negative',cr,lf
+    31 00000016 0A                 
+    32                                  msg_neg_len	equ $-msg_neg
+    33                                  
+    34 00000017 <res 0000000C>          num1		resb 12
+    35                                  
+    36 00000023 0000                    num_start	dw 0
+    37 00000025 0000                    num_len		dw 0
+    38                                  
+    39 00000027 0000                    rlen		dw 0
+    40 00000029 0000                    wlen		dw 0
+    41 0000002B A0860100                n1		dd 100000
+    42 0000002F FDFFFFFF                n2		dd -3
+    43 00000033 00000000                n2_temp		dd 0
+    44 00000037 00000000                nresult		dd 0
+    45                                  
+    46                                  segment	STACK STACK
+    47                                  		; this is defined in .def file
+    48 00000000 <res 00001000>          		resb 4096
+    49                                  
+    50                                  
+    51                                  segment _TEXT CLASS=CODE
+    52                                  
+    53 00000000 89E5                    ..start:        mov 	bp,sp
+    54                                  
+    55 00000002 BF0000                  divide:      	mov	di,false       		; set false
+    56                                  
+    57                                  		; num1 = n1
+    58 00000005 A1[2B00]                                mov	ax,[n1]
+    59 00000008 8B1E[2D00]                              mov	bx,[n1 + 2]
+    60                                  
+    61                                                  ; num2 = n2
+    62 0000000C 8B0E[2F00]                              mov	cx,[n2]
+    63 00000010 8B16[3100]                              mov	dx,[n2 + 2]
+    64                                  		
+    65                                  		; Test if the answer is +/-
+    66                                                  ; change all negative numbers to postive
+    67 00000014 83FB00                                  cmp	bx,0			; if (num1 < 0)
+    68 00000017 7C02                                    jl	t1_neg
+    69 00000019 EB0A                                    jmp	t1_pos
+    70 0000001B BF0100                  t1_neg:         mov	di,true			; set true if negative
+    71 0000001E F7DB                    		neg	bx			; num1 = -num1
+    72 00000020 F7D8                    		neg	ax
+    73 00000022 83DB00                                  sbb	bx,0
+    74 00000025 83FA00                  t1_pos:		cmp	dx,0			; if (num2 < 0)
+    75 00000028 7C02                                    jl	t2_neg
+    76 0000002A EB12                                    jmp	t2_pos
+    77 0000002C 83F701                  t2_neg:		xor	di,true			; if true already becomes false
+    78 0000002F F7DA                    		neg	dx			; num2 = -num2
+    79 00000031 F7D9                    		neg	cx
+    80 00000033 83DA00                                  sbb	dx,0
+    81 00000036 890E[3300]                              mov	[n2_temp], cx		; save to n2_temp
+    82 0000003A 8916[3500]                              mov	[n2_temp+2],dx
+    83                                  
+    84 0000003E 57                      t2_pos:		push	di			; Save sign result to stack
+    85                                  
+    86 0000003F 31FF                    		xor	di,di			; result = 0
+    87 00000041 31F6                                    xor	si,si
+    88                                  
+    89                                  align_start:	; First align num2 with num1
+    90                                  
+    91 00000043 39DA                    		cmp	dx,bx			; while (num2 < num1)
+    92 00000045 7C08                                    jl	shift
+    93 00000047 39DA                                    cmp	dx,bx
+    94 00000049 750A                                    jne	div_cont
+    95 0000004B 39C1                                    cmp	cx,ax
+    96 0000004D 7306                                    jae	div_cont
+    97                                                  
+    98 0000004F D1E1                    shift:		shl	cx,1			; num2 <<= 1
+    99 00000051 D1D2                    		rcl	dx,1
+   100                                  
+   101 00000053 EBEE                                    jmp	align_start
+   102                                  
+   103                                  div_cont:
+   104                                  
+   105 00000055 3B16[3500]              div_loop:      	cmp	dx, [n2_temp+2]       		; while (num2 >= original_num2)
+   106 00000059 7F0C                                    jg	do_div
+   107 0000005B 3B16[3500]                              cmp	dx, [n2_temp+2]
+   108 0000005F 7526                                    jne	neg_check
+   109 00000061 3B0E[3300]                              cmp	cx, [n2_temp]
+   110 00000065 7220                                    jb	neg_check
+   111                                  
+   112 00000067 D1E7                    do_div:		shl	di,1			; result <<= 1
+   113 00000069 D1D6                    		rcl	si,1
+   114                                  
+   115 0000006B 39D3                    		cmp	bx, dx			; if (num1 >= num2)
+   116 0000006D 7F08                                    jg	sub_result
+   117 0000006F 39D3                                    cmp	bx, dx
+   118 00000071 750E                                    jne	shift_num2
+   119 00000073 39C8                                    cmp	ax, cx
+   120 00000075 720A                                    jb	shift_num2
+   121                                  
+   122 00000077 29D3                    sub_result:     sub	bx, dx			; num1 = num1 - num2
+   123 00000079 19C8                    		sbb	ax, cx
+   124                                  
+   125 0000007B 83CF01                                  or	di,1			; result = result | 1
+   126 0000007E 83CE00                                  or	si,0
+   127                                  
+   128 00000081 D1FA                    shift_num2:	sar	dx,1			; num2 >>= 1
+   129 00000083 D1D9                    		rcr	cx,1
+   130                                  
+   131 00000085 EBCE                                    jmp	div_loop
+   132                                  
+   133 00000087 58                      neg_check:	pop	ax			; restore negative true/false off the stack
+   134 00000088 83F800                  		cmp	ax,0			; if (negative)
+   135 0000008B 7407                                    je 	div_done
+   136                                  
+   137 0000008D F7DE                                    neg	si			; result = -result
+   138 0000008F F7DF                                    neg	di
+   139 00000091 83DE00                                  sbb	si,0
+   140                                  
+   141                                  div_done:
+   142 00000094 89F9                                    mov	cx,di
+   143 00000096 89F2                                    mov	dx,si
+   144 00000098 E80200                  		call	pnum			; print the number
+   145                                  
+   146                                  
+   147                                  
+   148 0000009B EB2B                                    jmp	exit
+   149                                  
+   150                                  pnum:
+   151                                  
+   152                                  ; print the number
+   153                                  
+   154                                  		; Convert a number to a string
+   155                                                  ; the following parameters are return values
+   156 0000009D 1E                                      push	ds                      ; beginning of string
+   157 0000009E 68[2300]                                push	num_start
+   158 000000A1 1E                                      push	ds			; length of string 
+   159 000000A2 68[2500]                                push	num_len
+   160                                                  ; Input parameters
+   161 000000A5 52                                      push	dx			; push MSB
+   162 000000A6 51                                      push	cx		        ; push LSB
+   163                                                  ;push	si			; MSB
+   164                                                  ;push	di			; LSB
+   165 000000A7 1E                                      push	ds                      ; far pointer to buffer
+   166 000000A8 68[1700]                                push	num1 
+   167 000000AB 9A[D100][0000]          		call	far itoa
+   168 000000B0 83C410                                  add	sp,16			; clean up the stack pointer
+   169                                  
+   170                                  		; display the string
+   171 000000B3 6A01                                    push	stdout
+   172 000000B5 1E                                      push	ds
+   173 000000B6 A1[2300]                                mov	ax,[num_start]
+   174 000000B9 50                                      push	ax
+   175 000000BA A1[2500]                                mov 	ax,[num_len]
+   176 000000BD 50                                      push 	ax
+   177 000000BE 1E                                      push	ds
+   178 000000BF 68[2900]                                push	wlen
+   179 000000C2 9A[0000][0000]                          call	far DosWrite
+   180                                  
+   181 000000C7 C3                                      ret
+   182                                  
+   183                                  exit:
+   184 000000C8 6A01                    		push    1               	; terminate process
+   185 000000CA 6A00                    		push    0               	; return code
+   186 000000CC 9A[0000][0000]          		call	far DosExit
+   187                                  
+   188                                                  ; *********** Convert integer to string ***********
+   189                                  		;
+   190                                                  ; ==== Call parameters on stack
+   191                                                  ;
+   192                                  		; 4 bytes - return address
+   193                                                  ; 4 bytes - pointer to buffer
+   194                                                  ; 4 bytes - 32-bit number
+   195                                                  ; 4 bytes - pointer to dw number length
+   196                                                  ; 4 bytes - pointer to dw string start
+   197                                  
+   198 000000D1 89E5                    itoa:           mov bp,sp			; save the current stack pointer
+   199 000000D3 83C404                  		add sp,4			; move to the start of parameters
+   200                                  
+   201 000000D6 5F                      		pop di				; far pointer to buffer
+   202 000000D7 07                      		pop es
+   203                                  
+   204 000000D8 5B                                      pop bx				; load the 32-bit integer
+   205 000000D9 5A                                      pop dx
+   206                                  
+   207 000000DA B90B00                                  mov cx,0x000b
+   208 000000DD B020                                    mov al,' '
+   209 000000DF F3AA                                    repz stosb
+   210 000000E1 26880D                                  mov [es:di],cl
+   211 000000E4 57                                      push di				; end of the string
+   212 000000E5 89D8                                    mov ax,bx
+   213 000000E7 BE0A00                                  mov si,0x000a
+   214 000000EA 09D2                                    or dx,dx
+   215 000000EC 9C                                      pushf
+   216 000000ED 790A                                    jns lts_cont
+   217 000000EF F7D0                                    not ax
+   218 000000F1 F7D2                                    not dx
+   219 000000F3 83C001                                  add ax,1
+   220 000000F6 83D200                                  adc dx,+00
+   221                                  
+   222 000000F9 89C1                    lts_cont:       mov cx,ax
+   223 000000FB 89D0                    		mov ax,dx
+   224 000000FD 31D2                                    xor dx,dx
+   225 000000FF F7F6                                    div si
+   226 00000101 89C3                                    mov bx,ax
+   227 00000103 89C8                                    mov ax,cx
+   228 00000105 F7F6                                    div si
+   229 00000107 87D3                                    xchg dx,bx
+   230 00000109 80C330                                  add bl,'0'
+   231 0000010C 4F                                      dec di
+   232 0000010D 26881D                                  mov [es:di],bl
+   233 00000110 89C3                                    mov bx,ax
+   234 00000112 09D3                                    or bx,dx
+   235 00000114 75E3                                    jnz lts_cont
+   236 00000116 4F                                      dec di
+   237 00000117 B020                                    mov al,' '
+   238 00000119 9D                                      popf
+   239 0000011A 7907                                    jns notneg			; if not negative start exit
+   240 0000011C B02D                                    mov al,'-'
+   241 0000011E 268805                                  mov [es:di],al
+   242 00000121 EB01                                    jmp lts_exit			; '-' added exit now
+   243 00000123 47                      notneg:		inc di                          ; This wasn't negative move the start of string
+   244                                  
+   245                                                  
+   246                                  
+   247 00000124 5A                      lts_exit:       pop dx				; end of string
+   248                                  
+   249                                  
+   250                                  		; TODO something is wrong here
+   251                                                  ; pointers on stack are incorrect
+   252                                  
+   253 00000125 5E                                      pop si				; get pointer to num_len
+   254 00000126 07                                      pop es		
+   255 00000127 29FA                    		sub dx,di			; find length
+   256 00000129 268914                                  mov [es:si],dx			; save length
+   257 0000012C 01FA                                    add dx,di
+   258                                  
+   259 0000012E 89D6                                    mov si,dx
+   260 00000130 26C6040D                		mov [es:si], byte cr
+   261 00000134 26C644010A                              mov [es:si+1], byte lf
+   262 00000139 83C201                                  add dx,1
+   263                                  
+   264 0000013C 5E                      		pop si
+   265 0000013D 07                                      pop es
+   266 0000013E 26893C                                  mov [es:si],di			; save start of string
+   267                                  
+   268 00000141 89EC                                    mov sp,bp			; restore the stack pointer
+   269 00000143 CB                      		retf
+   270                                  
+   271                                  segment _DATA
+   272                                  
+   273                                  segment end

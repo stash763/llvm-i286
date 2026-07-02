@@ -1,0 +1,13 @@
+
+ test
+
+ Start     Length     Name                   Class
+ 0001:0000 00041H     _DATA                  DATA
+ 0002:0000 01000H     STACK                  
+ 0003:0000 00000H     end                    
+ 0003:0000 000FEH     _TEXT                  CODE
+
+ Origin   Group
+ 0001:0   DGROUP
+
+Program entry point at 0003:0000

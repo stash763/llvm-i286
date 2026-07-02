@@ -1,0 +1,242 @@
+     1                                  ; NASM example to create a 16-bit OS/2 segmented NE executable
+     2                                  
+     3                                  
+     4                                  BITS 16
+     5                                  
+     6                                  cr		equ 0x0d
+     7                                  lf		equ 0x0a
+     8                                  stdin		equ 0
+     9                                  stdout		equ 1
+    10                                  
+    11                                  group DGROUP _DATA
+    12                                  
+    13                                          	extern   DosExit
+    14                                  	        extern   DosRead
+    15                                  	        extern   DosWrite
+    16                                                  extern	 DosAllocSeg
+    17                                  
+    18                                  
+    19                                  segment _DATA CLASS=DATA 			; Static data
+    20                                  
+    21 00000000 48656C6C6F20576F72-     msg1		db 'Hello World',cr,lf
+    22 00000009 6C640D0A           
+    23                                  msg1_len	equ $-msg1
+    24                                  
+    25 0000000D <res 0000000C>          num1		resb 12
+    26                                  
+    27 00000019 0000                    num_start	dw 0
+    28 0000001B 0000                    num_len		dw 0
+    29                                  
+    30 0000001D 0000                    rlen		dw 0
+    31 0000001F 0000                    wlen		dw 0
+    32                                  
+    33 00000021 A0860100                n1		dd 100000
+    34 00000025 A1860100                n2		dd 100001
+    35 00000029 00000000                nresult		dd 0
+    36                                  
+    37                                  segment	STACK STACK
+    38                                  		; this is defined in .def file
+    39 00000000 <res 00001000>          		resb 4096
+    40                                  
+    41                                  
+    42                                  segment _TEXT CLASS=CODE
+    43                                  
+    44 00000000 89E5                    ..start:        mov 	bp,sp
+    45                                  
+    46                                  		; Example of playing the value 100000 on the stack
+    47                                                  ; this has to take into account little endian byte ordering
+    48                                  
+    49                                                  ;mov	eax,100000
+    50                                                  ;mov 	[n1], eax
+    51                                                  ;mov	eax,0
+    52                                                  ;mov	dx,[n1]
+    53                                                  ;mov	ax,[n1 + 2]
+    54                                  
+    55                                                  ;mov	eax,100001
+    56                                                  ;mov 	[n1], eax
+    57                                                  ;mov	eax,0
+    58                                                  ;mov	dx,[n1]
+    59                                                  ;mov	ax,[n1 + 2]
+    60                                  
+    61                                                  ;mov	eax,200000
+    62                                                  ;mov 	[n1], eax
+    63                                                  ;mov	eax,0
+    64                                                  ;mov	dx,[n1]
+    65                                                  ;mov	ax,[n1 + 2]
+    66                                  
+    67                                                  ;mov	eax,200001
+    68                                                  ;mov 	[n1], eax
+    69                                                  ;mov	eax,0
+    70                                                  ;mov	dx,[n1]
+    71                                                  ;mov	ax,[n1 + 2]
+    72                                  
+    73                                  
+    74                                                  ;mov	[ss:bp - 4], word 0x86A0
+    75                                                  ;mov	[ss:bp - 2], word 0x0001
+    76                                  
+    77                                                  ;mov	eax,0xFFFFFFFF
+    78                                                  ;mov 	[nresult], eax
+    79                                                  ;mov	eax,10
+    80                                                  ;mov	[nresult], eax
+    81                                  
+    82                                  		; Add two 32-bit numbers
+    83 00000002 8B16[2100]              		mov	dx,[n1]
+    84 00000006 A1[2300]                                mov	ax,[n1 + 2]
+    85 00000009 8B0E[2500]                              mov	cx,[n2]
+    86 0000000D 8B1E[2700]                              mov     bx,[n2 + 2]
+    87 00000011 01D8                                    add	ax,bx
+    88 00000013 11CA                                    adc	dx,cx
+    89 00000015 8916[2900]                              mov	[nresult],dx
+    90 00000019 A3[2B00]                                mov	[nresult + 2],ax
+    91 0000001C 66B800000000                            mov	eax,0
+    92 00000022 66A1[2900]                              mov	eax,[nresult]
+    93                                  
+    94                                                  ; Subtract
+    95                                  
+    96 00000026 8B16[2900]                              mov	dx,[nresult]		; Get the result value
+    97 0000002A A1[2B00]                                mov	ax,[nresult + 2]
+    98 0000002D 8B0E[2100]                              mov	cx,[n1]			; Get the value 100000
+    99 00000031 8B1E[2300]                              mov	bx,[n1 + 2]
+   100 00000035 29D8                                    sub	ax,bx
+   101 00000037 19CA                                    sbb	dx,cx
+   102 00000039 8916[2900]                              mov	[nresult],dx
+   103 0000003D A3[2B00]                                mov	[nresult+2],ax
+   104 00000040 66B800000000                            mov	eax,0
+   105 00000046 66A1[2900]                              mov	eax,[nresult]
+   106                                  
+   107                                                  ; multiply
+   108                                                  ; divide
+   109                                                  
+   110                                                  ; compare
+   111 0000004A A1[2100]                                mov	ax,[n1]			; 1st number
+   112 0000004D 8B1E[2300]                              mov	bx,[n1 + 2]
+   113 00000051 8B0E[2500]                              mov	cx,[n2]			; 2nd number
+   114 00000055 8B16[2700]                              mov	dx,[n2 + 2]
+   115 00000059 39C8                                    cmp	ax,cx
+   116 0000005B 7502                                    jnz	comp32_end
+   117 0000005D 39D3                                    cmp	bx,dx
+   118                                  comp32_end:	; zf = 1 if equal
+   119                                  		; > zf = 0 carry = 0
+   120                                                  ; < zf = 0 carry = 1
+   121                                                  
+   122                                                  
+   123                                  
+   124                                                  ;  Add parameters to stack and then call OS
+   125                                                  
+   126 0000005F 6A01                    		push 	stdout			; specifying stdout
+   127 00000061 1E                                      push	ds                      ; Address of string ds:address
+   128 00000062 68[0000]                		push	msg1
+   129 00000065 B90D00                                  mov	cx,msg1_len             ; length of string
+   130 00000068 51                                      push	cx
+   131 00000069 1E                                      push	ds                      ; Address to store bytes written ds:address
+   132 0000006A 68[1F00]                                push	wlen
+   133 0000006D 9A[0000][0000]                          call    far DosWrite
+   134                                  
+   135                                  		; Convert a number to a string
+   136                                                  ; the following parameters are return values
+   137 00000072 1E                                      push	ds                      ; beginning of string
+   138 00000073 68[1900]                                push	num_start
+   139 00000076 1E                                      push	ds			; length of string 
+   140 00000077 68[1B00]                                push	num_len
+   141                                                  ; Input parameters
+   142 0000007A B80000                  		mov     ax,0			; push MSB
+   143 0000007D 50                                      push	ax
+   144 0000007E B87B00                                  mov	ax,123                  ; push LSB
+   145 00000081 50                                      push	ax
+   146 00000082 1E                                      push	ds                      ; far pointer to buffer
+   147 00000083 68[0D00]                                push	num1 
+   148 00000086 9A[AB00][0000]          		call	far itoa
+   149 0000008B 83C410                                  add	sp,16			; clean up the stack pointer
+   150                                  
+   151                                  		; display the string
+   152 0000008E 6A01                                    push	stdout
+   153 00000090 1E                                      push	ds
+   154 00000091 A1[1900]                                mov	ax,[num_start]
+   155 00000094 50                                      push	ax
+   156 00000095 A1[1B00]                                mov 	ax,[num_len]
+   157 00000098 50                                      push 	ax
+   158 00000099 1E                                      push	ds
+   159 0000009A 68[1F00]                                push	wlen
+   160 0000009D 9A[0000][0000]                          call	far DosWrite
+   161                                  
+   162                                  exit:
+   163 000000A2 6A01                    		push    1               	; terminate process
+   164 000000A4 6A00                    		push    0               	; return code
+   165 000000A6 9A[0000][0000]          		call	far DosExit
+   166                                  
+   167                                                  ; *********** Convert integer to string ***********
+   168                                  		;
+   169                                                  ; ==== Call parameters on stack
+   170                                                  ;
+   171                                  		; 4 bytes - return address
+   172                                                  ; 4 bytes - pointer to buffer
+   173                                                  ; 4 bytes - 32-bit number
+   174                                                  ; 4 bytes - pointer to dw number length
+   175                                                  ; 4 bytes - pointer to dw string start
+   176                                  
+   177 000000AB 89E5                    itoa:           mov bp,sp			; save the current stack pointer
+   178 000000AD 83C404                  		add sp,4			; move to the start of parameters
+   179                                  
+   180 000000B0 5F                      		pop di				; far pointer to buffer
+   181 000000B1 07                      		pop es
+   182                                  
+   183 000000B2 5B                                      pop bx				; load the 32-bit integer
+   184 000000B3 5A                                      pop dx
+   185                                  
+   186 000000B4 B90B00                                  mov cx,0x000b
+   187 000000B7 B020                                    mov al,' '
+   188 000000B9 F3AA                                    repz stosb
+   189 000000BB 26880D                                  mov [es:di],cl
+   190 000000BE 57                                      push di				; end of the string
+   191 000000BF 89D8                                    mov ax,bx
+   192 000000C1 BE0A00                                  mov si,0x000a
+   193 000000C4 09D2                                    or dx,dx
+   194 000000C6 9C                                      pushf
+   195 000000C7 790A                                    jns lts_cont
+   196 000000C9 F7D0                                    not ax
+   197 000000CB F7D2                                    not dx
+   198 000000CD 83C001                                  add ax,1
+   199 000000D0 83D200                                  adc dx,+00
+   200                                  
+   201 000000D3 89C1                    lts_cont:       mov cx,ax
+   202 000000D5 89D0                    		mov ax,dx
+   203 000000D7 31D2                                    xor dx,dx
+   204 000000D9 F7F6                                    div si
+   205 000000DB 89C3                                    mov bx,ax
+   206 000000DD 89C8                                    mov ax,cx
+   207 000000DF F7F6                                    div si
+   208 000000E1 87D3                                    xchg dx,bx
+   209 000000E3 80C330                                  add bl,'0'
+   210 000000E6 4F                                      dec di
+   211 000000E7 26881D                                  mov [es:di],bl
+   212 000000EA 89C3                                    mov bx,ax
+   213 000000EC 09D3                                    or bx,dx
+   214 000000EE 75E3                                    jnz lts_cont
+   215 000000F0 4F                                      dec di
+   216 000000F1 B020                                    mov al,' '
+   217 000000F3 9D                                      popf
+   218 000000F4 7904                                    jns notneg			; if not negative start exit
+   219 000000F6 B02D                                    mov al,'-'
+   220 000000F8 EB01                                    jmp lts_exit			; '-' added exit now
+   221 000000FA 47                      notneg:		inc di                          ; This wasn't negative move the start of string
+   222                                  
+   223 000000FB 5A                      lts_exit:       pop dx                          ; end of string
+   224                                  
+   225                                  		; TODO something is wrong here
+   226                                                  ; pointers on stack are incorrect
+   227                                  
+   228 000000FC 5E                                      pop si				; get pointer to num_len
+   229 000000FD 07                                      pop es		
+   230 000000FE 29FA                    		sub dx,di			; find length
+   231 00000100 268914                                  mov [es:si],dx			; save length
+   232                                  
+   233 00000103 5E                                      pop si
+   234 00000104 07                                      pop es
+   235 00000105 26893C                                  mov [es:si],di			; save start of string
+   236                                  
+   237 00000108 89EC                                    mov sp,bp			; restore the stack pointer
+   238 0000010A CB                      		retf
+   239                                  
+   240                                  segment _DATA
+   241                                  
+   242                                  segment end

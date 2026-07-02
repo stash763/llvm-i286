@@ -1,0 +1,15 @@
+[submodule "antlr4"]
+	path = antlr4
+	url = https://github.com/antlr/antlr4.git
+[submodule "grammars-v4"]
+	path = grammars-v4
+	url = https://github.com/antlr/grammars-v4.git
+[submodule "2ine_debugger"]
+	path = 2ine_debugger
+	url = https://github.com/stash763/2ine_debugger.git
+[submodule "musl"]
+	path = musl
+	url = https://git.musl-libc.org/git/musl
+[submodule "c-testsuite"]
+	path = c-testsuite
+	url = https://github.com/c-testsuite/c-testsuite.git

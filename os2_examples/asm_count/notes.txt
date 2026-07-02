@@ -1,0 +1,66 @@
+Examples of 32-bit numbers stored in memory
+
+Decimal	Hex         - Normal Hex
+
+10	0A 00 00 00
+
+1000	E8 03 00 00
+
+512	00 02 00 00
+
+2000	D0 07 00 00
+
+100000	A0 86 01 00
+
+100001	A1 86 01 00
+
+200000	40 0D 03 00
+
+200001	41 0D 03 00
+
+300000	E0 93 04 00 - 00 04 93 E0
+
+Each pair is reversed ex.
+
+16-bit number
+
+E803	 is	03E8
+
+32-bit number
+
+A0860100 is 000186A0
+
+Addition Example 100000 + 200000
+
+Loaded into 16-bit registers dx & ax this becomes
+
+dx [NUM_ADDR]      = 34464
+ax [NUM_ADDR + 2]  = 1
+
+cx [NUM2_ADDR]     = 3392
+bx [NUM2_ADDR + 2] = 3
+
+add ax,bx
+ax = 4
+
+adc dx,cx
+dx = 37856
+
+Store result
+
+[NUM3_ADDR] 	= dx
+[NUM3_ADDR + 2] = ax
+
+Comparison Example 
+
+ax [NUM_ADDR]	   = 34464
+bx [NUM_ADDR + 2]  = 1
+
+cx [NUM2_ADDR]	   = 3392
+dx [NUM2_ADDR + 2] = 3
+
+cmp ax, cx
+jne end
+cmp bx, dx
+
+
