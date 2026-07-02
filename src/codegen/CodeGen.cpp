@@ -75,9 +75,7 @@ std::string CodeGen::generate(const ir::Module& module) {
         }
     }
     
-    // Add runtime library functions (provided by runtime.lib)
-    externFuncs.push_back("_MultiplyI32");
-    externFuncs.push_back("_DivideI32");
+    // Note: Runtime library functions are added below after globals processing
     
     // Generate code for each function
     for (const auto& func : module.functions) {
