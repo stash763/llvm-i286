@@ -37,10 +37,6 @@ endif()
 
 # Function to generate ANTLR4 parser from grammar
 function(generate_antlr_grammar GRAMMAR_FILE OUTPUT_DIR)
-    if(NOT ANTLR4_TOOL_AVAILABLE)
-        return()
-    endif()
-    
     get_filename_component(GRAMMAR_NAME ${GRAMMAR_FILE} NAME_WE)
     
     set(GENERATED_SOURCES
@@ -54,19 +50,28 @@ function(generate_antlr_grammar GRAMMAR_FILE OUTPUT_DIR)
         "${OUTPUT_DIR}/${GRAMMAR_NAME}Visitor.cpp"
     )
     
-    add_custom_command(
-        OUTPUT ${GENERATED_SOURCES}
-        COMMAND java -jar ${ANTLR4_TOOL_JAR}
-                -Dlanguage=Cpp
-                -o ${OUTPUT_DIR}
-                -package antlr::generated
-                -visitor
-                -no-listener
-                ${GRAMMAR_FILE}
-        DEPENDS ${GRAMMAR_FILE}
-        COMMENT "Generating ANTLR4 parser for ${GRAMMAR_NAME}"
-        VERBATIM
-    )
+    if(NOT ANTLR4_TOOL_AVAILABLE)
+        # Tool not available, use existing generated files
+        if(NOT EXISTS "${OUTPUT_DIR}/${GRAMMAR_NAME}Parser.cpp")
+            message(FATAL_ERROR "ANTLR4 tool not available and generated parser files not found in ${OUTPUT_DIR}")
+        endif()
+        message(STATUS "Using existing generated parser files from ${OUTPUT_DIR}")
+    else()
+        # Tool available, regenerate parser
+        add_custom_command(
+            OUTPUT ${GENERATED_SOURCES}
+            COMMAND java -jar ${ANTLR4_TOOL_JAR}
+                    -Dlanguage=Cpp
+                    -o ${OUTPUT_DIR}
+                    -package antlr::generated
+                    -visitor
+                    -no-listener
+                    ${GRAMMAR_FILE}
+            DEPENDS ${GRAMMAR_FILE}
+            COMMENT "Generating ANTLR4 parser for ${GRAMMAR_NAME}"
+            VERBATIM
+        )
+    endif()
     
     # Create an interface library for the generated parser
     add_library(${GRAMMAR_NAME}_parser STATIC ${GENERATED_SOURCES})
@@ -101,11 +106,7 @@ add_library(ir_parser
     src/ir/IrVisitor.cpp
 )
 target_include_directories(ir_parser PUBLIC ${CMAKE_SOURCE_DIR}/src ${GENERATED_PARSER_DIR} ${ANTLR4_RUNTIME_INCLUDE})
-if(ANTLR4_TOOL_AVAILABLE)
-    target_link_libraries(ir_parser PUBLIC LLVMIR_parser ${ANTLR4_RUNTIME_LIB_TARGET})
-else()
-    target_link_libraries(ir_parser PUBLIC ${ANTLR4_RUNTIME_LIB_TARGET})
-endif()
+target_link_libraries(ir_parser PUBLIC LLVMIR_parser ${ANTLR4_RUNTIME_LIB_TARGET})
 
 # 286 Target Definitions
 add_library(target_286
