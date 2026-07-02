@@ -234,12 +234,11 @@ std::string CodeGen::generate(const ir::Module& module) {
     }
     
     // Add runtime library functions to extern list
+    // These must match the tested runtime in ./runtime/
     externFuncs.push_back("_MultiplyI32");
     externFuncs.push_back("_DivideI32");
-    externFuncs.push_back("_DivideU32");
-    externFuncs.push_back("_ShiftL32");
-    externFuncs.push_back("_ShiftR32");
-    externFuncs.push_back("_ShiftAr32");
+    externFuncs.push_back("printnum");
+    externFuncs.push_back("itoa");
     
     // Wrap in module structure
     return emitter.emitModule(

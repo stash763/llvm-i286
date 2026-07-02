@@ -1984,39 +1984,97 @@ std::vector<LoweredInstruction> InstructionSelector::lowerInstruction(const ir::
                 std::string divisorName = irInst.operands[1].name;
                 
                 if (is32) {
-                    // 32-bit division: DX:AX / operand
-                    // Load dividend low word to AX, high word to DX
+                    // 32-bit division using tested runtime helper
+                    // Tested runtime convention (from runtime/div32.asm):
+                    //   Input:  ax:bx = dividend (low:high)
+                    //           cx:dx = divisor (low:high)
+                    //   Output: di:si = quotient (high:low)
+                    //   Uses retf (far return)
+                    
+                    // Load dividend low word to AX, high word to BX
                     auto dividendLoads = impl->load32Bit(dividentName);
                     lowered.instructions.insert(lowered.instructions.end(), dividendLoads.begin(), dividendLoads.end());
                     
-                    // Load divisor
+                    // Move dividend low word from AX to... wait, load32Bit loads to AX:DX
+                    // We need to move DX to BX for the tested runtime convention
+                    Instruction286 movDivHigh;
+                    movDivHigh.mnemonic = "mov";
+                    movDivHigh.operands.push_back("bx");
+                    movDivHigh.operands.push_back("dx");
+                    lowered.instructions.push_back(movDivHigh);
+                    
+                    // Load divisor low word to CX, high word to DX
                     std::string divisorReg = impl->getPhysReg(divisorName);
                     if (divisorReg.find("bp") != std::string::npos) {
-                        Instruction286 loadDivisor;
-                        loadDivisor.mnemonic = "mov";
-                        loadDivisor.operands.push_back("cx");
-                        loadDivisor.operands.push_back("[" + divisorReg + "]");
-                        lowered.instructions.push_back(loadDivisor);
+                        Instruction286 loadDivisorLow;
+                        loadDivisorLow.mnemonic = "mov";
+                        loadDivisorLow.operands.push_back("cx");
+                        loadDivisorLow.operands.push_back("[" + divisorReg + "]");
+                        lowered.instructions.push_back(loadDivisorLow);
+                        
+                        Instruction286 loadDivisorHigh;
+                        loadDivisorHigh.mnemonic = "mov";
+                        int offset = 0;
+                        std::string offsetStr = divisorReg.substr(divisorReg.find("bp") + 2);
+                        if (!offsetStr.empty()) {
+                            try { offset = std::stoi(offsetStr); } catch (...) {}
+                        }
+                        int newOffset = offset + 2;
+                        std::string offsetStr2 = (newOffset >= 0) ? ("+" + std::to_string(newOffset)) : std::to_string(newOffset);
+                        loadDivisorHigh.operands.push_back("[" + std::string("bp") + offsetStr2 + "]");
+                        loadDivisorHigh.operands.push_back("dx");
+                        lowered.instructions.push_back(loadDivisorHigh);
                     } else if (divisorReg != "cx") {
-                        Instruction286 movDivisor;
-                        movDivisor.mnemonic = "mov";
-                        movDivisor.operands.push_back("cx");
-                        movDivisor.operands.push_back(divisorReg);
-                        lowered.instructions.push_back(movDivisor);
+                        Instruction286 movDivisorLow;
+                        movDivisorLow.mnemonic = "mov";
+                        movDivisorLow.operands.push_back("cx");
+                        movDivisorLow.operands.push_back(divisorReg);
+                        lowered.instructions.push_back(movDivisorLow);
+                        
+                        // Load high word
+                        Instruction286 movDivisorHigh;
+                        movDivisorHigh.mnemonic = "mov";
+                        movDivisorHigh.operands.push_back("dx");
+                        movDivisorHigh.operands.push_back("[" + divisorReg + "+2]");
+                        lowered.instructions.push_back(movDivisorHigh);
                     }
                     
-                    // For 32-bit division, we need to use a runtime helper
-                    // This is a placeholder - will call _DivideI32 or _DivideU32
+                    // Call division routine (far call, tested runtime)
                     Instruction286 callDiv;
                     callDiv.mnemonic = "call";
-                    callDiv.operands.push_back(irInst.opcode == ir::Opcode::SDiv ? "_DivideI32" : "_DivideU32");
+                    std::string divFuncName = (irInst.opcode == ir::Opcode::SDiv) ? "_DivideI32" : "_DivideU32";
+                    callDiv.operands.push_back("far " + divFuncName);
                     lowered.instructions.push_back(callDiv);
                     
-                    // Result: DX:AX (DX=high, AX=low)
+                    // Result: DI:SI (DI=high, SI=low)
                     if (!irInst.resultName.empty()) {
                         std::string resultStack = impl->alloc32BitStack(irInst.resultName);
-                        auto storeInsts = impl->store32Bit(irInst.resultName);
-                        lowered.instructions.insert(lowered.instructions.end(), storeInsts.begin(), storeInsts.end());
+                        
+                        // Store SI (low word)
+                        Instruction286 storeResultLow;
+                        storeResultLow.mnemonic = "mov";
+                        storeResultLow.operands.push_back("[" + resultStack + "]");
+                        storeResultLow.operands.push_back("si");
+                        lowered.instructions.push_back(storeResultLow);
+                        
+                        // Store DI (high word)
+                        Instruction286 storeResultHigh;
+                        storeResultHigh.mnemonic = "mov";
+                        if (resultStack.find("bp") != std::string::npos) {
+                            int offset = 0;
+                            std::string offsetStr = resultStack.substr(2);
+                            if (!offsetStr.empty()) {
+                                try { offset = std::stoi(offsetStr); } catch (...) {}
+                            }
+                            int newOffset = offset + 2;
+                            std::string offsetStr2 = (newOffset >= 0) ? ("+" + std::to_string(newOffset)) : std::to_string(newOffset);
+                            storeResultHigh.operands.push_back("[" + std::string("bp") + offsetStr2 + "]");
+                        } else {
+                            storeResultHigh.operands.push_back("[" + resultStack + "+2]");
+                        }
+                        storeResultHigh.operands.push_back("di");
+                        lowered.instructions.push_back(storeResultHigh);
+                        
                         impl->vregToPhys[irInst.resultName] = resultStack;
                     }
                 } else {

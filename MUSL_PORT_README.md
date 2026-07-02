@@ -112,6 +112,33 @@ source.c
   → source.o (OS/2 object file)
 ```
 
+### Runtime Library
+
+The runtime library (`runtime.lib`) provides tested arithmetic and I/O functions:
+
+- `_MultiplyI32` - 32-bit signed multiplication (tested)
+- `_DivideI32` - 32-bit signed division (tested)
+- `printnum` - Print 32-bit integer to stdout
+- `itoa` - Integer to ASCII conversion
+
+These are built from the `runtime/` directory and linked via `wlink`.
+
+**Calling Convention for Arithmetic Functions:**
+
+```
+_MultiplyI32:
+  Input:  ax:bx = multiplicand (low:high)
+          cx:dx = multiplier (low:high)
+  Output: di:si = product (high:low)
+  Return: retf (far return)
+
+_DivideI32:
+  Input:  ax:bx = dividend (low:high)
+          cx:dx = divisor (low:high)
+  Output: di:si = quotient (high:low)
+  Return: retf (far return)
+```
+
 ## Architecture
 
 ### Data Model
