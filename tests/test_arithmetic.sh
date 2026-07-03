@@ -138,6 +138,40 @@ entry:
 EOF
 run_test "return_constant" "$OUTPUT_DIR/test_const.ll"
 
+# Test 9: Musl memcpy.c (full pipeline: clang → llvm-i286 → nasm)
+MUSL_MEMCPY="$PROJECT_DIR/musl/src/string/i286/memcpy.c"
+if [ -f "$MUSL_MEMCPY" ]; then
+    TOTAL=$((TOTAL + 1))
+    echo -n "Test $TOTAL: musl_memcpy_c... "
+    
+    MUSL_MEMCPY_DIR="$OUTPUT_DIR/musl_memcpy_c"
+    mkdir -p "$MUSL_MEMCPY_DIR"
+    
+    # Compile with clang to LLVM IR
+    if ! clang -target i386-elf -S -emit-llvm -O0 \
+         "$MUSL_MEMCPY" \
+         -o "$MUSL_MEMCPY_DIR/memcpy.ll" 2>"$MUSL_MEMCPY_DIR/clang_err.txt"; then
+        echo -e "${RED}FAIL (clang error)${NC}"
+        cat "$MUSL_MEMCPY_DIR/clang_err.txt"
+        FAIL=$((FAIL + 1))
+    # Run code generator
+    elif ! "$LLVM_I286" "$MUSL_MEMCPY_DIR/memcpy.ll" -o "$MUSL_MEMCPY_DIR/output.asm" 2>"$MUSL_MEMCPY_DIR/codegen_err.txt"; then
+        echo -e "${RED}FAIL (codegen error)${NC}"
+        cat "$MUSL_MEMCPY_DIR/codegen_err.txt"
+        FAIL=$((FAIL + 1))
+    # Assemble with NASM
+    elif ! $NASM -f obj -o "$MUSL_MEMCPY_DIR/output.o" "$MUSL_MEMCPY_DIR/output.asm" 2>"$MUSL_MEMCPY_DIR/nasm_err.txt"; then
+        echo -e "${RED}FAIL (nasm error)${NC}"
+        cat "$MUSL_MEMCPY_DIR/nasm_err.txt"
+        FAIL=$((FAIL + 1))
+    else
+        echo -e "${GREEN}PASS${NC}"
+        PASS=$((PASS + 1))
+    fi
+else
+    echo -e "${YELLOW}SKIP (musl memcpy.c not found)${NC}"
+fi
+
 echo ""
 echo "=== Results ==="
 echo "Total: $TOTAL"

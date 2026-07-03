@@ -25,6 +25,9 @@ struct InstructionSelector::Impl {
     // Set of vreg names that are 32-bit values
     std::set<std::string> is32bit;
     
+    // Set of vreg names that are alloca results (addresses, not values)
+    std::set<std::string> allocaVregs;
+    
     // Function declarations: maps function name to parameter bit widths
     std::map<std::string, std::vector<int>> funcParamBitWidths;
     
@@ -69,7 +72,23 @@ struct InstructionSelector::Impl {
         
         auto it = vregToPhys.find(vreg);
         if (it != vregToPhys.end()) {
-            return it->second;
+            std::string physReg = it->second;
+            // For 32-bit vregs, we can't use registers directly for addressing
+            // We need to spill to stack and return the stack location
+            if (is32BitReg(vreg) && !physReg.empty() && physReg.find("bp") == std::string::npos) {
+                // This is a 32-bit vreg in a register - allocate stack space
+                int stackOffset = 0;
+                if (vregToStackOffset.find(vreg) == vregToStackOffset.end()) {
+                    currentStackOffset -= 4;
+                    stackOffset = currentStackOffset;
+                    vregToStackOffset[vreg] = stackOffset;
+                } else {
+                    stackOffset = vregToStackOffset[vreg];
+                }
+                std::string stackResult = "bp" + std::to_string(stackOffset);
+                return stackResult;
+            }
+            return physReg;
         }
         // Default to AX if not found
         return "ax";
@@ -289,7 +308,13 @@ std::vector<LoweredInstruction> InstructionSelector::lowerInstruction(const ir::
                     // The register allocator can't handle 32-bit values properly on 286
                     // We need to get the stack slot for each operand
                     std::string op1Stack = impl->getPhysReg(op1Name);
-                    std::string op2Stack = impl->getPhysReg(op2Name);
+                    
+                    // Check if op2 is a constant
+                    bool op2IsConst = impl->isConstant(op2Name);
+                    std::string op2Stack;
+                    if (!op2IsConst) {
+                        op2Stack = impl->getPhysReg(op2Name);
+                    }
                     
                     // Load op1 low word to AX, high word to BX
                     Instruction286 loadLow;
@@ -307,14 +332,29 @@ std::vector<LoweredInstruction> InstructionSelector::lowerInstruction(const ir::
                     // Load op2 low word to CX, high word to DX
                     Instruction286 loadOp2Low;
                     loadOp2Low.mnemonic = "mov";
-                    loadOp2Low.operands.push_back("cx");
-                    loadOp2Low.operands.push_back("[" + op2Stack + "]");
+                    if (op2IsConst) {
+                        // Load constant low word
+                        int64_t constVal = std::stoll(op2Name);
+                        loadOp2Low.operands.push_back("cx");
+                        loadOp2Low.operands.push_back(std::to_string(constVal & 0xFFFF));
+                    } else {
+                        loadOp2Low.operands.push_back("cx");
+                        loadOp2Low.operands.push_back("[" + op2Stack + "]");
+                    }
                     lowered.instructions.push_back(loadOp2Low);
                     
                     Instruction286 loadOp2High;
                     loadOp2High.mnemonic = "mov";
-                    loadOp2High.operands.push_back("dx");
-                    loadOp2High.operands.push_back("[" + op2Stack + "+2]");
+                    if (op2IsConst) {
+                        // Load constant high word (sign-extend for negative constants)
+                        int64_t constVal = std::stoll(op2Name);
+                        int16_t highWord = (constVal >> 16) & 0xFFFF;
+                        loadOp2High.operands.push_back("dx");
+                        loadOp2High.operands.push_back(std::to_string(highWord));
+                    } else {
+                        loadOp2High.operands.push_back("dx");
+                        loadOp2High.operands.push_back("[" + op2Stack + "+2]");
+                    }
                     lowered.instructions.push_back(loadOp2High);
                     
                     // Add low words: AX = AX + CX
@@ -480,7 +520,13 @@ std::vector<LoweredInstruction> InstructionSelector::lowerInstruction(const ir::
                     
                     // Get stack locations for both operands
                     std::string op1Stack = impl->getPhysReg(op1Name);
-                    std::string op2Stack = impl->getPhysReg(op2Name);
+                    
+                    // Check if op2 is a constant
+                    bool op2IsConst = impl->isConstant(op2Name);
+                    std::string op2Stack;
+                    if (!op2IsConst) {
+                        op2Stack = impl->getPhysReg(op2Name);
+                    }
                     
                     // Load op1 low word to AX, high word to BX
                     Instruction286 loadLow;
@@ -498,14 +544,29 @@ std::vector<LoweredInstruction> InstructionSelector::lowerInstruction(const ir::
                     // Load op2 low word to CX, high word to DX
                     Instruction286 loadOp2Low;
                     loadOp2Low.mnemonic = "mov";
-                    loadOp2Low.operands.push_back("cx");
-                    loadOp2Low.operands.push_back("[" + op2Stack + "]");
+                    if (op2IsConst) {
+                        // Load constant low word
+                        int64_t constVal = std::stoll(op2Name);
+                        loadOp2Low.operands.push_back("cx");
+                        loadOp2Low.operands.push_back(std::to_string(constVal & 0xFFFF));
+                    } else {
+                        loadOp2Low.operands.push_back("cx");
+                        loadOp2Low.operands.push_back("[" + op2Stack + "]");
+                    }
                     lowered.instructions.push_back(loadOp2Low);
                     
                     Instruction286 loadOp2High;
                     loadOp2High.mnemonic = "mov";
-                    loadOp2High.operands.push_back("dx");
-                    loadOp2High.operands.push_back("[" + op2Stack + "+2]");
+                    if (op2IsConst) {
+                        // Load constant high word (sign-extend for negative constants)
+                        int64_t constVal = std::stoll(op2Name);
+                        int16_t highWord = (constVal >> 16) & 0xFFFF;
+                        loadOp2High.operands.push_back("dx");
+                        loadOp2High.operands.push_back(std::to_string(highWord));
+                    } else {
+                        loadOp2High.operands.push_back("dx");
+                        loadOp2High.operands.push_back("[" + op2Stack + "+2]");
+                    }
                     lowered.instructions.push_back(loadOp2High);
                     
                     // Sub low words: AX = AX - CX
@@ -1090,6 +1151,8 @@ std::vector<LoweredInstruction> InstructionSelector::lowerInstruction(const ir::
             // Store the stack offset for this variable
             if (!irInst.resultName.empty()) {
                 impl->vregToStackOffset[irInst.resultName] = offset;
+                // Mark as alloca result (this is an ADDRESS, not a value)
+                impl->allocaVregs.insert(irInst.resultName);
             }
             
             Instruction286 subSp;
@@ -1105,10 +1168,15 @@ std::vector<LoweredInstruction> InstructionSelector::lowerInstruction(const ir::
             // Operands: [0] = value to store, [1] = pointer to store to
             if (irInst.operands.size() >= 2) {
                 std::string valName = irInst.operands[0].name;
-                std::string ptrReg = impl->getPhysReg(irInst.operands[1].name);
+                std::string ptrName = irInst.operands[1].name;
+                std::string ptrReg = impl->getPhysReg(ptrName);
+                
+                // Check if the pointer is an alloca result (ADDRESS, not VALUE)
+                bool ptrIsAlloca = impl->allocaVregs.find(ptrName) != impl->allocaVregs.end();
                 
                 // Check if this is a 32-bit store
-                bool is32 = irInst.resultType && irInst.resultType->bitWidth == 32;
+                // Note: store instructions don't have resultType, so check if the value is 32-bit
+                bool is32 = impl->is32BitReg(valName);
                 
                 // Check if value is in a register (parameter or previously loaded value)
                 // A parameter name like "0" or "1" will be in vregToPhys
@@ -1167,10 +1235,19 @@ std::vector<LoweredInstruction> InstructionSelector::lowerInstruction(const ir::
                         lowered.instructions.push_back(movHigh);
                     }
                     
-                    // Check if ptrReg is a bp-relative address (contains "bp")
+                    // For non-alloca pointers, load the address to BX first
                     std::string dest;
-                    if (ptrReg.find("bp") != std::string::npos) {
+                    if (ptrReg.find("bp") != std::string::npos && ptrIsAlloca) {
+                        // Alloca result: stack location IS the address
                         dest = "[" + ptrReg + "]";
+                    } else if (ptrReg.find("bp") != std::string::npos) {
+                        // Non-alloca: load the pointer value to BX, use [bx] as destination
+                        Instruction286 loadAddr;
+                        loadAddr.mnemonic = "mov";
+                        loadAddr.operands.push_back("bx");
+                        loadAddr.operands.push_back("[" + ptrReg + "]");
+                        lowered.instructions.push_back(loadAddr);
+                        dest = "[" + std::string("bx") + "]";
                     } else {
                         dest = ptrReg;
                     }
@@ -1186,7 +1263,7 @@ std::vector<LoweredInstruction> InstructionSelector::lowerInstruction(const ir::
                     // Need to calculate the offset properly
                     Instruction286 storeHigh;
                     storeHigh.mnemonic = "mov";
-                    if (ptrReg.find("bp") != std::string::npos) {
+                    if (ptrIsAlloca && ptrReg.find("bp") != std::string::npos) {
                         // Extract offset from ptrReg (e.g., "bp-10" -> -10)
                         int offset = 0;
                         std::string offsetStr = ptrReg.substr(2); // Remove "bp"
@@ -1196,6 +1273,9 @@ std::vector<LoweredInstruction> InstructionSelector::lowerInstruction(const ir::
                         int newOffset = offset + 2;
                         std::string offsetStr2 = (newOffset >= 0) ? ("+" + std::to_string(newOffset)) : std::to_string(newOffset);
                         storeHigh.operands.push_back("[" + std::string("bp") + offsetStr2 + "]");
+                    } else if (ptrReg.find("bp") != std::string::npos) {
+                        // Non-alloca: use bx+2
+                        storeHigh.operands.push_back("[" + std::string("bx+2") + "]");
                     } else {
                         storeHigh.operands.push_back("[" + ptrReg + "+2]");
                     }
@@ -1226,10 +1306,19 @@ std::vector<LoweredInstruction> InstructionSelector::lowerInstruction(const ir::
                         lowered.instructions.push_back(movInst);
                     }
                     
-                    // Check if ptrReg is a bp-relative address (contains "bp")
+                    // For non-alloca pointers, load the address to BX first
                     std::string dest;
-                    if (ptrReg.find("bp") != std::string::npos) {
+                    if (ptrReg.find("bp") != std::string::npos && ptrIsAlloca) {
+                        // Alloca result: stack location IS the address
                         dest = "[" + ptrReg + "]";
+                    } else if (ptrReg.find("bp") != std::string::npos) {
+                        // Non-alloca: load the pointer value to BX, use [bx] as destination
+                        Instruction286 loadAddr;
+                        loadAddr.mnemonic = "mov";
+                        loadAddr.operands.push_back("bx");
+                        loadAddr.operands.push_back("[" + ptrReg + "]");
+                        lowered.instructions.push_back(loadAddr);
+                        dest = "[" + std::string("bx") + "]";
                     } else {
                         dest = ptrReg;
                     }
@@ -1254,6 +1343,9 @@ std::vector<LoweredInstruction> InstructionSelector::lowerInstruction(const ir::
                 // Check if ptrReg is a bp-relative address (contains "bp")
                 bool ptrIsMem = (ptrReg.find("bp") != std::string::npos);
                 
+                // Check if the pointer is an alloca result (ADDRESS, not VALUE)
+                bool ptrIsAlloca = impl->allocaVregs.find(irInst.operands[0].name) != impl->allocaVregs.end();
+                
                 // Check if this is a 32-bit load
                 bool is32 = irInst.resultType && irInst.resultType->bitWidth == 32;
                 
@@ -1261,6 +1353,19 @@ std::vector<LoweredInstruction> InstructionSelector::lowerInstruction(const ir::
                     if (is32) {
                         // 32-bit load: load both low and high words, store to stack
                         std::string stackLoc = ptrReg;
+                        
+                        // For non-alloca pointers, we need to load the pointer VALUE first,
+                        // then use that value as the address to load from
+                        std::string actualAddr = stackLoc;
+                        if (!ptrIsAlloca) {
+                            // Load the 16-bit address from the pointer value to BX
+                            Instruction286 loadAddr;
+                            loadAddr.mnemonic = "mov";
+                            loadAddr.operands.push_back("bx");
+                            loadAddr.operands.push_back("[" + stackLoc + "]");
+                            lowered.instructions.push_back(loadAddr);
+                            actualAddr = "bx";
+                        }
                         
                         // Get result stack location
                         // If the result doesn't have a stack offset, allocate one
@@ -1280,11 +1385,15 @@ std::vector<LoweredInstruction> InstructionSelector::lowerInstruction(const ir::
                             lowered.instructions.push_back(subSp);
                         }
                         
-                        // Load low word into AX
+                        // Load low word from [actualAddr] into AX
                         Instruction286 loadLow;
                         loadLow.mnemonic = "mov";
                         loadLow.operands.push_back("ax");
-                        loadLow.operands.push_back("[" + stackLoc + "]");
+                        if (actualAddr == "bx") {
+                            loadLow.operands.push_back("[" + std::string("bx") + "]");
+                        } else {
+                            loadLow.operands.push_back("[" + actualAddr + "]");
+                        }
                         lowered.instructions.push_back(loadLow);
                         
                         // Store low word to result
@@ -1294,13 +1403,15 @@ std::vector<LoweredInstruction> InstructionSelector::lowerInstruction(const ir::
                         storeLow.operands.push_back("ax");
                         lowered.instructions.push_back(storeLow);
                         
-                        // Load high word into DX
+                        // Load high word from [actualAddr+2] into DX
                         Instruction286 loadHigh;
                         loadHigh.mnemonic = "mov";
                         loadHigh.operands.push_back("dx");
-                        if (stackLoc.find("bp") != std::string::npos) {
+                        if (actualAddr == "bx") {
+                            loadHigh.operands.push_back("[" + std::string("bx+2") + "]");
+                        } else if (actualAddr.find("bp") != std::string::npos) {
                             int offset = 0;
-                            std::string offsetStr = stackLoc.substr(2);
+                            std::string offsetStr = actualAddr.substr(2);
                             if (!offsetStr.empty()) {
                                 try { offset = std::stoi(offsetStr); } catch (...) {}
                             }
@@ -1308,7 +1419,7 @@ std::vector<LoweredInstruction> InstructionSelector::lowerInstruction(const ir::
                             std::string offsetStr2 = (newOffset >= 0) ? ("+" + std::to_string(newOffset)) : std::to_string(newOffset);
                             loadHigh.operands.push_back("[" + std::string("bp") + offsetStr2 + "]");
                         } else {
-                            loadHigh.operands.push_back("[" + stackLoc + "+2]");
+                            loadHigh.operands.push_back("[" + actualAddr + "+2]");
                         }
                         lowered.instructions.push_back(loadHigh);
                         
@@ -1337,15 +1448,31 @@ std::vector<LoweredInstruction> InstructionSelector::lowerInstruction(const ir::
                         // This ensures subsequent operations use the stack location
                         impl->vregToPhys[irInst.resultName] = resultStack;
                     } else {
-                        // 16-bit load: assign a register and load
+                        // 16-bit load (8-bit or 16-bit): assign a register and load
                         std::string destReg = impl->assignReg(irInst.resultName);
                         
-                        // Load from [bp-N] into destReg
-                        Instruction286 loadInst;
-                        loadInst.mnemonic = "mov";
-                        loadInst.operands.push_back(destReg);
-                        loadInst.operands.push_back("[" + ptrReg + "]");
-                        lowered.instructions.push_back(loadInst);
+                        // For non-alloca pointers, load the address to BX first
+                        if (!ptrIsAlloca) {
+                            Instruction286 loadAddr;
+                            loadAddr.mnemonic = "mov";
+                            loadAddr.operands.push_back("bx");
+                            loadAddr.operands.push_back("[" + ptrReg + "]");
+                            lowered.instructions.push_back(loadAddr);
+                            
+                            // Load from [bx] into destReg
+                            Instruction286 loadInst;
+                            loadInst.mnemonic = "mov";
+                            loadInst.operands.push_back(destReg);
+                            loadInst.operands.push_back("[" + std::string("bx") + "]");
+                            lowered.instructions.push_back(loadInst);
+                        } else {
+                            // Load from [bp-N] into destReg (alloca result, address is the stack location)
+                            Instruction286 loadInst;
+                            loadInst.mnemonic = "mov";
+                            loadInst.operands.push_back(destReg);
+                            loadInst.operands.push_back("[" + ptrReg + "]");
+                            lowered.instructions.push_back(loadInst);
+                        }
                     }
                 }
                 // else: loading from a register, no-op (value is already there)
@@ -1422,12 +1549,12 @@ std::vector<LoweredInstruction> InstructionSelector::lowerInstruction(const ir::
                         // Global variable - push both words
                         Instruction286 pushHigh;
                         pushHigh.mnemonic = "push";
-                        pushHigh.operands.push_back("[" + nasmName + "+2]");
+                        pushHigh.operands.push_back("word [" + nasmName + "+2]");
                         lowered.instructions.push_back(pushHigh);
                         
                         Instruction286 pushLow;
                         pushLow.mnemonic = "push";
-                        pushLow.operands.push_back("[" + nasmName + "]");
+                        pushLow.operands.push_back("word [" + nasmName + "]");
                         lowered.instructions.push_back(pushLow);
                     } else if (isConst) {
                         // 32-bit constant: split into low and high words
@@ -1463,14 +1590,29 @@ std::vector<LoweredInstruction> InstructionSelector::lowerInstruction(const ir::
                         std::string argReg = impl->getPhysReg(argName);
                         if (argReg.find("bp") != std::string::npos) {
                             // Memory operand - push both words
+                            // Compute high word offset properly
+                            std::string highAddr;
+                            if (argReg.find("bp") != std::string::npos) {
+                                int offset = 0;
+                                std::string offsetStr = argReg.substr(2); // Remove "bp"
+                                if (!offsetStr.empty()) {
+                                    try { offset = std::stoi(offsetStr); } catch (...) {}
+                                }
+                                int newOffset = offset + 2;
+                                std::string offsetStr2 = (newOffset >= 0) ? ("+" + std::to_string(newOffset)) : std::to_string(newOffset);
+                                highAddr = "[" + std::string("bp") + offsetStr2 + "]";
+                            } else {
+                                highAddr = "[" + argReg + "+2]";
+                            }
+                            
                             Instruction286 pushHigh;
                             pushHigh.mnemonic = "push";
-                            pushHigh.operands.push_back("[" + argReg + "+2]");
+                            pushHigh.operands.push_back("word " + highAddr);
                             lowered.instructions.push_back(pushHigh);
                             
                             Instruction286 pushLow;
                             pushLow.mnemonic = "push";
-                            pushLow.operands.push_back("[" + argReg + "]");
+                            pushLow.operands.push_back("word [" + argReg + "]");
                             lowered.instructions.push_back(pushLow);
                         } else {
                             // Register operand - push DX (high), then register (low)
@@ -1834,7 +1976,8 @@ std::vector<LoweredInstruction> InstructionSelector::lowerInstruction(const ir::
         
         case ir::Opcode::GetElementPtr: {
             // GEP: result = getelementptr type, ptr base, i32 idx1, i32 idx2, ...
-            // For simple cases (single index): result = base + (index * elemSize)
+            // For opaque pointers (ptr), element size = 1 (byte-level arithmetic)
+            // For typed pointers, element size = sizeof(elementType)
             if (!irInst.operands.empty()) {
                 std::string baseReg = impl->getPhysReg(irInst.operands[0].name);
                 
@@ -1843,11 +1986,27 @@ std::vector<LoweredInstruction> InstructionSelector::lowerInstruction(const ir::
                     Instruction286 movBase;
                     movBase.mnemonic = "mov";
                     movBase.operands.push_back("ax");
-                    movBase.operands.push_back(baseReg);
+                    // Check if baseReg is a stack location (contains "bp" but not in brackets)
+                    if (baseReg.find("bp") != std::string::npos && baseReg[0] != '[') {
+                        movBase.operands.push_back("[" + baseReg + "]");
+                    } else {
+                        movBase.operands.push_back(baseReg);
+                    }
                     lowered.instructions.push_back(movBase);
                 }
                 
-                // Add offset for each index (simplified: just first index * elemSize)
+                // Determine element size from result type
+                // For opaque pointers (void*), elemSize = 1
+                int elemSize = 1;
+                if (irInst.resultType && irInst.resultType->isPointer()) {
+                    if (irInst.resultType->elementType && 
+                        irInst.resultType->elementType->isInteger()) {
+                        elemSize = irInst.resultType->elementType->getBitWidth() / 8;
+                    }
+                    // If elementType is void (opaque pointer), elemSize stays 1
+                }
+                
+                // Add offset for each index
                 for (size_t i = 1; i < irInst.operands.size(); i++) {
                     std::string idxReg = impl->getPhysReg(irInst.operands[i].name);
                     
@@ -1864,22 +2023,38 @@ std::vector<LoweredInstruction> InstructionSelector::lowerInstruction(const ir::
                         Instruction286 addConst;
                         addConst.mnemonic = "add";
                         addConst.operands.push_back("ax");
-                        addConst.operands.push_back(std::to_string(constVal * 2)); // Assume 2-byte elements
+                        addConst.operands.push_back(std::to_string(constVal * elemSize));
                         lowered.instructions.push_back(addConst);
                     } else if (!isConst) {
-                        // Add register offset (shift left by 1 to multiply by 2)
+                        // Add register offset: ax += idxReg * elemSize
                         if (idxReg != "ax") {
                             Instruction286 movIdx;
                             movIdx.mnemonic = "mov";
                             movIdx.operands.push_back("cx");
-                            movIdx.operands.push_back(idxReg);
+                            // Check if idxReg is a stack location (contains "bp" but not in brackets)
+                            if (idxReg.find("bp") != std::string::npos && idxReg[0] != '[') {
+                                movIdx.operands.push_back("[" + idxReg + "]");
+                            } else {
+                                movIdx.operands.push_back(idxReg);
+                            }
                             lowered.instructions.push_back(movIdx);
                         }
-                        Instruction286 shlIdx;
-                        shlIdx.mnemonic = "shl";
-                        shlIdx.operands.push_back("cx");
-                        shlIdx.operands.push_back("1");
-                        lowered.instructions.push_back(shlIdx);
+                        // Multiply by elemSize (shift left)
+                        if (elemSize > 1) {
+                            int shiftAmount = 0;
+                            int temp = elemSize;
+                            while (temp > 1) {
+                                temp >>= 1;
+                                shiftAmount++;
+                            }
+                            if (shiftAmount > 0) {
+                                Instruction286 shlIdx;
+                                shlIdx.mnemonic = "shl";
+                                shlIdx.operands.push_back("cx");
+                                shlIdx.operands.push_back(std::to_string(shiftAmount));
+                                lowered.instructions.push_back(shlIdx);
+                            }
+                        }
                         
                         Instruction286 addIdx;
                         addIdx.mnemonic = "add";
@@ -2042,38 +2217,68 @@ std::vector<LoweredInstruction> InstructionSelector::lowerInstruction(const ir::
                     // Call division routine (far call, tested runtime)
                     Instruction286 callDiv;
                     callDiv.mnemonic = "call";
-                    std::string divFuncName = (irInst.opcode == ir::Opcode::SDiv) ? "_DivideI32" : "_DivideU32";
+                    std::string divFuncName = (irInst.opcode == ir::Opcode::SDiv || irInst.opcode == ir::Opcode::SRem) ? "_DivideI32" : "_DivideU32";
                     callDiv.operands.push_back("far " + divFuncName);
                     lowered.instructions.push_back(callDiv);
                     
-                    // Result: DI:SI (DI=high, SI=low)
+                    // Result depends on operation:
+                    // Division (SDiv/UDiv): DI:SI (DI=high, SI=low) = quotient
+                    // Remainder (SRem/URem): BX:AX (BX=high, AX=low) = remainder
                     if (!irInst.resultName.empty()) {
                         std::string resultStack = impl->alloc32BitStack(irInst.resultName);
+                        bool isRemainder = (irInst.opcode == ir::Opcode::SRem || irInst.opcode == ir::Opcode::URem);
                         
-                        // Store SI (low word)
-                        Instruction286 storeResultLow;
-                        storeResultLow.mnemonic = "mov";
-                        storeResultLow.operands.push_back("[" + resultStack + "]");
-                        storeResultLow.operands.push_back("si");
-                        lowered.instructions.push_back(storeResultLow);
-                        
-                        // Store DI (high word)
-                        Instruction286 storeResultHigh;
-                        storeResultHigh.mnemonic = "mov";
-                        if (resultStack.find("bp") != std::string::npos) {
-                            int offset = 0;
-                            std::string offsetStr = resultStack.substr(2);
-                            if (!offsetStr.empty()) {
-                                try { offset = std::stoi(offsetStr); } catch (...) {}
+                        if (isRemainder) {
+                            // Store AX (low word of remainder)
+                            Instruction286 storeResultLow;
+                            storeResultLow.mnemonic = "mov";
+                            storeResultLow.operands.push_back("[" + resultStack + "]");
+                            storeResultLow.operands.push_back("ax");
+                            lowered.instructions.push_back(storeResultLow);
+                            
+                            // Store BX (high word of remainder)
+                            Instruction286 storeResultHigh;
+                            storeResultHigh.mnemonic = "mov";
+                            if (resultStack.find("bp") != std::string::npos) {
+                                int offset = 0;
+                                std::string offsetStr = resultStack.substr(2);
+                                if (!offsetStr.empty()) {
+                                    try { offset = std::stoi(offsetStr); } catch (...) {}
+                                }
+                                int newOffset = offset + 2;
+                                std::string offsetStr2 = (newOffset >= 0) ? ("+" + std::to_string(newOffset)) : std::to_string(newOffset);
+                                storeResultHigh.operands.push_back("[" + std::string("bp") + offsetStr2 + "]");
+                            } else {
+                                storeResultHigh.operands.push_back("[" + resultStack + "+2]");
                             }
-                            int newOffset = offset + 2;
-                            std::string offsetStr2 = (newOffset >= 0) ? ("+" + std::to_string(newOffset)) : std::to_string(newOffset);
-                            storeResultHigh.operands.push_back("[" + std::string("bp") + offsetStr2 + "]");
+                            storeResultHigh.operands.push_back("bx");
+                            lowered.instructions.push_back(storeResultHigh);
                         } else {
-                            storeResultHigh.operands.push_back("[" + resultStack + "+2]");
+                            // Store SI (low word of quotient)
+                            Instruction286 storeResultLow;
+                            storeResultLow.mnemonic = "mov";
+                            storeResultLow.operands.push_back("[" + resultStack + "]");
+                            storeResultLow.operands.push_back("si");
+                            lowered.instructions.push_back(storeResultLow);
+                            
+                            // Store DI (high word of quotient)
+                            Instruction286 storeResultHigh;
+                            storeResultHigh.mnemonic = "mov";
+                            if (resultStack.find("bp") != std::string::npos) {
+                                int offset = 0;
+                                std::string offsetStr = resultStack.substr(2);
+                                if (!offsetStr.empty()) {
+                                    try { offset = std::stoi(offsetStr); } catch (...) {}
+                                }
+                                int newOffset = offset + 2;
+                                std::string offsetStr2 = (newOffset >= 0) ? ("+" + std::to_string(newOffset)) : std::to_string(newOffset);
+                                storeResultHigh.operands.push_back("[" + std::string("bp") + offsetStr2 + "]");
+                            } else {
+                                storeResultHigh.operands.push_back("[" + resultStack + "+2]");
+                            }
+                            storeResultHigh.operands.push_back("di");
+                            lowered.instructions.push_back(storeResultHigh);
                         }
-                        storeResultHigh.operands.push_back("di");
-                        lowered.instructions.push_back(storeResultHigh);
                         
                         impl->vregToPhys[irInst.resultName] = resultStack;
                     }
