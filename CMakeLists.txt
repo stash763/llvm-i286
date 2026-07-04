@@ -119,9 +119,17 @@ target_include_directories(target_286 PUBLIC ${CMAKE_SOURCE_DIR}/src)
 add_library(codegen
     src/codegen/CodeGen.cpp
     src/codegen/InstructionSelect.cpp
+    src/codegen/InstructionSelectUtils.cpp
+    src/codegen/ControlFlowOps.cpp
+    src/codegen/ArithmeticOps.cpp
+    src/codegen/BitwiseOps.cpp
+    src/codegen/MemoryOps.cpp
     src/codegen/RegisterAlloc.cpp
     src/codegen/Emitter.cpp
     src/codegen/Addressing.cpp
+    src/codegen/CallOps.cpp
+    src/codegen/ConversionOps.cpp
+    src/codegen/FpuOps.cpp
 )
 target_include_directories(codegen PUBLIC ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(codegen PUBLIC ir_parser target_286)
