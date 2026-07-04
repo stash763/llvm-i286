@@ -42,7 +42,7 @@ echo ""
 # Step 2: Link with wlink (exact same command as working example in 2ine_debugger/tests/asm/build.sh)
 echo "Step 2: Linking with wlink..."
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-wlink system os2 d all path ~/ow/open-watcom-v2/rel/lib286:~/ow/open-watcom-v2/lib286/os2 library ~/ow/open-watcom-v2/lib286/os2/os2.lib library "$SCRIPT_DIR/runtime/runtime.lib" name "$OUTPUT_EXE" file "$PWD/$OBJ_FILE"
+wlink system os2 d all path "$WATCOM/lib286" library "$WATCOM/lib286/os2/os2.lib" library "$SCRIPT_DIR/runtime/runtime.lib" name "$OUTPUT_EXE" file "$PWD/$OBJ_FILE"
 
 if [ $? -ne 0 ]; then
     echo "Error: wlink linking failed!"

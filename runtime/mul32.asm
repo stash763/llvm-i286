@@ -24,7 +24,9 @@ global _MultiplyI32
 
 _MultiplyI32:
 
+	        push	bp
 	        mov 	bp,sp
+                sub     sp, 2           ; allocate local for sign flag
                 mov	[ss:bp - 2], word false
 	      	;mov	di,false       		; set false
 
@@ -82,4 +84,6 @@ mul_end:	; result is in di:si
                 sbb si,0
 mul_done:
 
+		add     sp, 2           ; deallocate local
+                pop     bp              ; restore caller's BP
 		retf

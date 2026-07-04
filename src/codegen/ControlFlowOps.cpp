@@ -16,7 +16,7 @@ std::vector<LoweredInstruction> lowerRetTerm(SelectorState& state,
     LoweredInstruction lowered;
 
     // Return instruction - emit epilogue then ret
-    // If there's a return value operand, load it into AX first
+    // If there's a return value operand, load it into AX (and DX for 32-bit)
     if (!irInst.operands.empty()) {
         std::string retValName = irInst.operands[0].name;
 
@@ -32,6 +32,10 @@ std::vector<LoweredInstruction> lowerRetTerm(SelectorState& state,
             } catch (...) {}
         }
 
+        // Check if this is a 32-bit return value
+        bool is32 = state.is32BitReg(retValName) ||
+                    (irInst.resultType && irInst.resultType->bitWidth == 32);
+
         if (isConst) {
             // Load constant into AX
             Instruction286 movConst;
@@ -39,21 +43,82 @@ std::vector<LoweredInstruction> lowerRetTerm(SelectorState& state,
             movConst.operands.push_back("ax");
             movConst.operands.push_back(retValName);
             lowered.instructions.push_back(movConst);
+            if (is32) {
+                // High word is 0 for positive constants, or sign-extended
+                Instruction286 xorDx;
+                xorDx.mnemonic = "xor";
+                xorDx.operands.push_back("dx");
+                xorDx.operands.push_back("dx");
+                lowered.instructions.push_back(xorDx);
+            }
         } else {
-            // Move from register/memory to AX
-            std::string retValReg = state.getPhysReg(retValName);
-            if (retValReg != "ax") {
+            // Check if value is in vregToPhys (could be register or stack location)
+            auto physIt = state.vregToPhys.find(retValName);
+            bool foundInPhys = physIt != state.vregToPhys.end();
+            
+            // Also check if value is on stack
+            auto stackIt = state.vregToStackOffset.find(retValName);
+            bool foundOnStack = stackIt != state.vregToStackOffset.end();
+            
+            if (foundOnStack) {
+                // Value is on stack - load from memory
+                std::string retValReg = state.getPhysReg(retValName);
+                Instruction286 movLow;
+                movLow.mnemonic = "mov";
+                movLow.operands.push_back("ax");
+                movLow.operands.push_back("[" + retValReg + "]");
+                lowered.instructions.push_back(movLow);
+                if (is32) {
+                    // Load high word from [bp-offset+2]
+                    int offset = 0;
+                    std::string offsetStr = retValReg.substr(2);
+                    if (!offsetStr.empty()) {
+                        try { offset = std::stoi(offsetStr); } catch (...) {}
+                    }
+                    int newOffset = offset + 2;
+                    std::string offsetStr2 = (newOffset >= 0) ? ("+" + std::to_string(newOffset)) : std::to_string(newOffset);
+                    Instruction286 movHigh;
+                    movHigh.mnemonic = "mov";
+                    movHigh.operands.push_back("dx");
+                    movHigh.operands.push_back("[" + std::string("bp") + offsetStr2 + "]");
+                    lowered.instructions.push_back(movHigh);
+                }
+       } else if (foundInPhys) {
+            // Value is in vregToPhys (could be register or stack location)
+            std::string physReg = physIt->second;
+            if (physReg.find("bp") != std::string::npos) {
+                // Stack location stored in vregToPhys - load from memory
+                Instruction286 movLow;
+                movLow.mnemonic = "mov";
+                movLow.operands.push_back("ax");
+                movLow.operands.push_back("[" + physReg + "]");
+                lowered.instructions.push_back(movLow);
+                if (is32) {
+                    int offset = 0;
+                    std::string offsetStr = physReg.substr(2);
+                    if (!offsetStr.empty()) {
+                        try { offset = std::stoi(offsetStr); } catch (...) {}
+                    }
+                    int newOffset = offset + 2;
+                    std::string offsetStr2 = (newOffset >= 0) ? ("+" + std::to_string(newOffset)) : std::to_string(newOffset);
+                    Instruction286 movHigh;
+                    movHigh.mnemonic = "mov";
+                    movHigh.operands.push_back("dx");
+                    movHigh.operands.push_back("[" + std::string("bp") + offsetStr2 + "]");
+                    lowered.instructions.push_back(movHigh);
+                }
+            } else if (physReg != "ax") {
+                // Register - move to AX
                 Instruction286 movInst;
                 movInst.mnemonic = "mov";
                 movInst.operands.push_back("ax");
-                // Check if retValReg is a stack location (contains "bp")
-                if (retValReg.find("bp") != std::string::npos) {
-                    movInst.operands.push_back("[" + retValReg + "]");
-                } else {
-                    movInst.operands.push_back(retValReg);
-                }
+                movInst.operands.push_back(physReg);
                 lowered.instructions.push_back(movInst);
             }
+            if (is32) {
+                // For 32-bit in register, DX should have high word
+            }
+        }
         }
     }
 

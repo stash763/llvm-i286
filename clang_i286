@@ -1,0 +1,339 @@
+#!/bin/bash
+# clang_i286 - Frontend for the llvm-i286 toolchain
+#
+# Emulates the clang command-line interface to compile C/C++ source code
+# into OS/2 1.x executables targeting the Intel 80286 (16-bit protected mode).
+#
+# Pipeline:
+#   C/C++ source -> clang -emit-llvm -> .ll -> llvm-i286 -> .asm -> nasm -> .o -> wlink -> .exe
+#
+# Usage:
+#   clang_i286 [options] file.c [file2.c ...] [-o output]
+#
+# Options:
+#   -S              Emit NASM assembly (stop after llvm-i286)
+#   -c              Emit object file (stop after nasm)
+#   -emit-llvm      Emit LLVM IR (stop after clang, use with -S)
+#   -o <file>       Output file (extension determines type if no mode flag)
+#   -target i286-*  Accepted and ignored (this tool only targets i286)
+#   -v              Verbose mode
+#   All other flags are passed through to clang for the C->LLVM IR step.
+#
+# Environment overrides:
+#   CLANG         Path to clang binary (default: clang)
+#   LLVM_I286     Path to llvm-i286 binary (default: ./build/llvm-i286)
+#   NASM          Path to nasm binary (default: nasm)
+#   WLINK         Path to wlink binary (default: $WATCOM/binl/wlink)
+#   WLIB          Path to wlib binary (default: $WATCOM/binl/wlib)
+#   WATCOM        OpenWatcom installation root (default: ~/ow/open-watcom-v2/rel)
+#   RUNTIME_LIB   Path to runtime library (default: ./runtime/runtime.lib)
+
+set -euo pipefail
+
+# --- Discover paths relative to this script ---
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# --- Configuration (env-overridable) ---
+WATCOM_DIR="${WATCOM:-$HOME/ow/open-watcom-v2/rel}"
+CLANG_BIN="${CLANG:-clang}"
+LLVM_I286_BIN="${LLVM_I286:-$SCRIPT_DIR/build/llvm-i286}"
+NASM_BIN="${NASM:-nasm}"
+WLINK_BIN="${WLINK:-$WATCOM_DIR/binl/wlink}"
+WLIB_BIN="${WLIB:-$WATCOM_DIR/binl/wlib}"
+RUNTIME_LIB_PATH="${RUNTIME_LIB:-$SCRIPT_DIR/runtime/runtime.lib}"
+
+# --- Set OpenWatcom environment variables (required by wlink for system definitions) ---
+export WATCOM="$WATCOM_DIR"
+export INCLUDE="${WATCOM_DIR}/h"
+export PATH="$PATH:$WATCOM_DIR/binl64"
+
+VERBOSE=0
+
+# --- Mode state ---
+MODE="exe"        # exe | obj | asm | llvm | lib
+OUTPUT_FILE=""
+INPUT_FILES=()
+CLANG_ARGS=()
+LINK_EXTRA_ARGS=()
+
+# --- Helper: print error and exit ---
+die() {
+    echo "clang_i286: error: $*" >&2
+    exit 1
+}
+
+# --- Helper: print verbose info ---
+vmsg() {
+    if [ "$VERBOSE" -eq 1 ]; then
+        echo "clang_i286: $*" >&2
+    fi
+}
+
+# --- Check that required tools exist ---
+check_tool() {
+    local name="$1" path="$2"
+    if ! command -v "$path" &>/dev/null && [ ! -x "$path" ]; then
+        die "$name not found at '$path'. Set the appropriate environment variable or install it."
+    fi
+}
+
+# --- Parse command-line arguments ---
+while [ $# -gt 0 ]; do
+    case "$1" in
+        # Mode flags
+        -S)
+            if [ "${2:-}" = "-emit-llvm" ]; then
+                MODE="llvm"
+                shift 2
+            else
+                MODE="asm"
+                shift
+            fi
+            ;;
+        -c)
+            MODE="obj"
+            shift
+            ;;
+        -emit-llvm)
+            MODE="llvm"
+            shift
+            ;;
+
+        # Output file
+        -o)
+            [ $# -ge 2 ] || die "option '-o' requires an argument"
+            OUTPUT_FILE="$2"
+            shift 2
+            ;;
+
+        # Verbose
+        -v|--verbose)
+            VERBOSE=1
+            shift
+            ;;
+
+        # Target triple - accept and ignore (we only target i286)
+        -target)
+            shift 2
+            ;;
+        -target=*)
+            shift
+            ;;
+
+        # Architecture/tuning flags - consume (we only target i286)
+        -m32|-m16|-m64)
+            shift
+            ;;
+        -march=*|-mcpu=*|-mtune=*)
+            shift
+            ;;
+
+        # Flags to pass through to clang
+        -O*|-std=*|-I*|-D*|-W*|-f*|-nostdinc|-ffreestanding|-g|-pedantic|-w)
+            CLANG_ARGS+=("$1")
+            shift
+            ;;
+
+        # Linker pass-through (for future use)
+        -l*|-L*)
+            LINK_EXTRA_ARGS+=("$1")
+            shift
+            ;;
+
+        # Help
+        -h|-help|--help)
+            sed -n '2,/^set -e/p' "$0" | sed 's/^# \?//'
+            exit 0
+            ;;
+
+        # Anything else starting with - -> pass to clang
+        -*)
+            CLANG_ARGS+=("$1")
+            shift
+            ;;
+
+        # Input files
+        *)
+            INPUT_FILES+=("$1")
+            shift
+            ;;
+    esac
+done
+
+# --- Validate inputs ---
+[ ${#INPUT_FILES[@]} -gt 0 ] || die "no input files"
+
+for f in "${INPUT_FILES[@]}"; do
+    case "$f" in
+        *.c|*.C|*.cpp|*.cc|*.cxx|*.ll|*.s|*.S|*.o|*.obj|*.a|*.lib) ;;
+        *) die "unsupported file type: '$f'" ;;
+    esac
+done
+
+# --- Determine output filename if not specified ---
+if [ -z "$OUTPUT_FILE" ]; then
+    base="$(basename "${INPUT_FILES[0]}")"
+    base="${base%.*}"
+    case "$MODE" in
+        llvm) OUTPUT_FILE="${base}.ll" ;;
+        asm)  OUTPUT_FILE="${base}.asm" ;;
+        obj)  OUTPUT_FILE="${base}.o" ;;
+        exe)  OUTPUT_FILE="${base}.exe" ;;
+    esac
+fi
+
+# --- Check for library output ---
+BUILD_LIB=0
+case "$OUTPUT_FILE" in
+    *.a|*.lib) BUILD_LIB=1; MODE="lib" ;;
+esac
+
+# --- Verify tools ---
+check_tool "clang"     "$CLANG_BIN"
+check_tool "llvm-i286" "$LLVM_I286_BIN"
+check_tool "nasm"      "$NASM_BIN"
+
+if [ "$MODE" != "llvm" ] && [ "$MODE" != "asm" ]; then
+    check_tool "wlink" "$WLINK_BIN"
+fi
+
+if [ "$MODE" = "lib" ]; then
+    check_tool "wlib" "$WLIB_BIN"
+fi
+
+# --- Temp directory with cleanup ---
+TEMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/clang_i286.XXXXXX")"
+trap 'rm -rf "$TEMP_DIR"' EXIT
+
+vmsg "temp dir: $TEMP_DIR"
+vmsg "mode: $MODE"
+vmsg "output: $OUTPUT_FILE"
+
+# --- Process input files -> collect .o files ---
+OBJ_FILES=()
+
+for INPUT in "${INPUT_FILES[@]}"; do
+    base="$(basename "$INPUT")"
+    base="${base%.*}"
+
+    vmsg "processing: $INPUT"
+
+    # --- Stage 0: Pass through existing object files ---
+    case "$INPUT" in
+        *.o|*.obj)
+            OBJ_FILES+=("$INPUT")
+            continue
+            ;;
+    esac
+
+    # --- Stage 1: C/C++ -> LLVM IR ---
+    LLVM_IR="$TEMP_DIR/${base}.ll"
+
+    case "$INPUT" in
+        *.ll)
+            LLVM_IR="$INPUT"
+            ;;
+        *)
+            vmsg "clang: $INPUT -> $LLVM_IR"
+            if ! $CLANG_BIN -S -emit-llvm "${CLANG_ARGS[@]}" -o "$LLVM_IR" "$INPUT" 2>&1; then
+                die "clang failed for '$INPUT'"
+            fi
+            ;;
+    esac
+
+    # If emitting LLVM IR, copy and stop
+    if [ "$MODE" = "llvm" ]; then
+        if [ ${#INPUT_FILES[@]} -eq 1 ]; then
+            cp "$LLVM_IR" "$OUTPUT_FILE"
+        fi
+        continue
+    fi
+
+    # --- Stage 2: LLVM IR -> NASM assembly ---
+    ASM_FILE="$TEMP_DIR/${base}.asm"
+
+    vmsg "llvm-i286: $LLVM_IR -> $ASM_FILE"
+    if ! "$LLVM_I286_BIN" "$LLVM_IR" -o "$ASM_FILE" 2>&1; then
+        die "llvm-i286 failed for '$INPUT'"
+    fi
+
+    # If emitting assembly, copy and stop
+    if [ "$MODE" = "asm" ]; then
+        if [ ${#INPUT_FILES[@]} -eq 1 ]; then
+            cp "$ASM_FILE" "$OUTPUT_FILE"
+        fi
+        continue
+    fi
+
+    # --- Stage 3: NASM -> object file ---
+    OBJ_FILE="$TEMP_DIR/${base}.o"
+
+    vmsg "nasm: $ASM_FILE -> $OBJ_FILE"
+    if ! "$NASM_BIN" -f obj -o "$OBJ_FILE" "$ASM_FILE" 2>&1; then
+        die "nasm failed for '$INPUT'"
+    fi
+
+    OBJ_FILES+=("$OBJ_FILE")
+
+    # If emitting object files, copy and stop (for single file)
+    if [ "$MODE" = "obj" ]; then
+        if [ ${#INPUT_FILES[@]} -eq 1 ]; then
+            cp "$OBJ_FILE" "$OUTPUT_FILE"
+        fi
+        continue
+    fi
+done
+
+# --- Stage 4: Link object files -> executable ---
+if [ "$MODE" = "exe" ] && [ ${#OBJ_FILES[@]} -gt 0 ]; then
+    vmsg "wlink: linking ${#OBJ_FILES[@]} object(s) -> $OUTPUT_FILE"
+
+    # Build wlink arguments
+    WLINK_ARGS=(
+        "system" "os2"
+        "d" "all"
+        "path" "$WATCOM_DIR/lib286"
+        "library" "$WATCOM_DIR/lib286/os2/os2.lib"
+    )
+
+    # Add runtime library if it exists
+    if [ -f "$RUNTIME_LIB_PATH" ]; then
+        WLINK_ARGS+=("library" "$RUNTIME_LIB_PATH")
+    fi
+
+    WLINK_ARGS+=("name" "$OUTPUT_FILE")
+
+    # Add each object file
+    for obj in "${OBJ_FILES[@]}"; do
+        WLINK_ARGS+=("file" "$obj")
+    done
+
+    # Add extra linker args
+    for arg in "${LINK_EXTRA_ARGS[@]}"; do
+        WLINK_ARGS+=("$arg")
+    done
+
+    if ! "$WLINK_BIN" "${WLINK_ARGS[@]}" 2>&1; then
+        die "wlink failed"
+    fi
+
+    echo "clang_i286: created executable: $OUTPUT_FILE"
+fi
+
+# --- Stage 5: Create static library ---
+if [ "$MODE" = "lib" ] && [ ${#OBJ_FILES[@]} -gt 0 ]; then
+    vmsg "wlib: archiving ${#OBJ_FILES[@]} object(s) -> $OUTPUT_FILE"
+
+    WLIB_ARGS=("-c" "$OUTPUT_FILE")
+    for obj in "${OBJ_FILES[@]}"; do
+        WLIB_ARGS+=("$obj")
+    done
+
+    if ! "$WLIB_BIN" "${WLIB_ARGS[@]}" 2>&1; then
+        die "wlib failed"
+    fi
+
+    echo "clang_i286: created library: $OUTPUT_FILE"
+fi
+
+exit 0

@@ -29,8 +29,12 @@ std::vector<LoweredInstruction> lowerAdd(SelectorState& state,
             // For 32-bit operations, always use stack locations
             std::string op1Stack = state.getPhysReg(op1Name);
 
-            // Check if op2 is a constant
-            bool op2IsConst = state.isConstant(op2Name);
+            // Check if op2 is a vreg (exists in state maps)
+            bool op2IsVreg = state.vregToPhys.find(op2Name) != state.vregToPhys.end() ||
+                             state.vregToStackOffset.find(op2Name) != state.vregToStackOffset.end();
+            
+            // Check if op2 is a constant (only if not a vreg)
+            bool op2IsConst = !op2IsVreg && state.isConstant(op2Name);
             std::string op2Stack;
             if (!op2IsConst) {
                 op2Stack = state.getPhysReg(op2Name);

@@ -81,21 +81,8 @@ struct SelectorState {
         auto it = vregToPhys.find(vreg);
         if (it != vregToPhys.end()) {
             std::string physReg = it->second;
-            // For 32-bit vregs, we can't use registers directly for addressing
-            // We need to spill to stack and return the stack location
-            if (is32BitReg(vreg) && !physReg.empty() && physReg.find("bp") == std::string::npos) {
-                // This is a 32-bit vreg in a register - allocate stack space
-                int stackOffset = 0;
-                if (vregToStackOffset.find(vreg) == vregToStackOffset.end()) {
-                    currentStackOffset -= 4;
-                    stackOffset = currentStackOffset;
-                    vregToStackOffset[vreg] = stackOffset;
-                } else {
-                    stackOffset = vregToStackOffset[vreg];
-                }
-                std::string stackResult = "bp" + std::to_string(stackOffset);
-                return stackResult;
-            }
+            // Note: We no longer spill 32-bit register values here.
+            // Callers that need a stack location should handle spilling explicitly.
             return physReg;
         }
         // Default to AX if not found

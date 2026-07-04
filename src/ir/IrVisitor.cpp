@@ -439,16 +439,152 @@ std::unique_ptr<Instruction> IrVisitor::parseInstruction(LLVMIRParser::ValueInst
             inst->operands.push_back(std::move(ptrOp));
         }
     }
-    // Parse operands for other instructions (simplified)
-    else if (ctx->andInst()) inst->opcode = Opcode::And;
-    else if (ctx->orInst()) inst->opcode = Opcode::Or;
-    else if (ctx->xorInst()) inst->opcode = Opcode::Xor;
-    else if (ctx->shlInst()) inst->opcode = Opcode::Shl;
-    else if (ctx->lShrInst()) inst->opcode = Opcode::LShr;
-    else if (ctx->aShrInst()) inst->opcode = Opcode::AShr;
+    // Parse operands for bitwise instructions
+    else if (ctx->andInst()) {
+        inst->opcode = Opcode::And;
+        auto *ctx_ = ctx->andInst();
+        if (ctx_->typeValue() && ctx_->value()) {
+            std::string typeText = ctx_->typeValue()->getText();
+            if (typeText.substr(0, 1) == "i") {
+                size_t spacePos = typeText.find(' ');
+                std::string typeStr = spacePos != std::string::npos ? typeText.substr(0, spacePos) : typeText;
+                inst->resultType = Type::makeInteger(std::stoi(typeStr.substr(1)));
+            }
+            Operand op1;
+            std::string text = ctx_->typeValue()->value() ? ctx_->typeValue()->value()->getText() : "";
+            if (!text.empty() && text[0] == '%') text = text.substr(1);
+            op1.name = text;
+            inst->operands.push_back(std::move(op1));
+            Operand op2;
+            text = ctx_->value()->getText();
+            if (!text.empty() && text[0] == '%') text = text.substr(1);
+            op2.name = text;
+            inst->operands.push_back(std::move(op2));
+        }
+    }
+    else if (ctx->orInst()) {
+        inst->opcode = Opcode::Or;
+        auto *ctx_ = ctx->orInst();
+        if (ctx_->typeValue() && ctx_->value()) {
+            std::string typeText = ctx_->typeValue()->getText();
+            if (typeText.substr(0, 1) == "i") {
+                size_t spacePos = typeText.find(' ');
+                std::string typeStr = spacePos != std::string::npos ? typeText.substr(0, spacePos) : typeText;
+                inst->resultType = Type::makeInteger(std::stoi(typeStr.substr(1)));
+            }
+            Operand op1;
+            std::string text = ctx_->typeValue()->value() ? ctx_->typeValue()->value()->getText() : "";
+            if (!text.empty() && text[0] == '%') text = text.substr(1);
+            op1.name = text;
+            inst->operands.push_back(std::move(op1));
+            Operand op2;
+            text = ctx_->value()->getText();
+            if (!text.empty() && text[0] == '%') text = text.substr(1);
+            op2.name = text;
+            inst->operands.push_back(std::move(op2));
+        }
+    }
+    else if (ctx->xorInst()) {
+        inst->opcode = Opcode::Xor;
+        auto *ctx_ = ctx->xorInst();
+        if (ctx_->typeValue() && ctx_->value()) {
+            std::string typeText = ctx_->typeValue()->getText();
+            if (typeText.substr(0, 1) == "i") {
+                size_t spacePos = typeText.find(' ');
+                std::string typeStr = spacePos != std::string::npos ? typeText.substr(0, spacePos) : typeText;
+                inst->resultType = Type::makeInteger(std::stoi(typeStr.substr(1)));
+            }
+            Operand op1;
+            std::string text = ctx_->typeValue()->value() ? ctx_->typeValue()->value()->getText() : "";
+            if (!text.empty() && text[0] == '%') text = text.substr(1);
+            op1.name = text;
+            inst->operands.push_back(std::move(op1));
+            Operand op2;
+            text = ctx_->value()->getText();
+            if (!text.empty() && text[0] == '%') text = text.substr(1);
+            op2.name = text;
+            inst->operands.push_back(std::move(op2));
+        }
+    }
+    else if (ctx->shlInst()) {
+        inst->opcode = Opcode::Shl;
+        auto *ctx_ = ctx->shlInst();
+        if (ctx_->typeValue() && ctx_->value()) {
+            std::string typeText = ctx_->typeValue()->getText();
+            if (typeText.substr(0, 1) == "i") {
+                size_t spacePos = typeText.find(' ');
+                std::string typeStr = spacePos != std::string::npos ? typeText.substr(0, spacePos) : typeText;
+                inst->resultType = Type::makeInteger(std::stoi(typeStr.substr(1)));
+            }
+            Operand op1;
+            std::string text = ctx_->typeValue()->value() ? ctx_->typeValue()->value()->getText() : "";
+            if (!text.empty() && text[0] == '%') text = text.substr(1);
+            op1.name = text;
+            inst->operands.push_back(std::move(op1));
+            Operand op2;
+            text = ctx_->value()->getText();
+            if (!text.empty() && text[0] == '%') text = text.substr(1);
+            op2.name = text;
+            inst->operands.push_back(std::move(op2));
+        }
+    }
+    else if (ctx->lShrInst()) {
+        inst->opcode = Opcode::LShr;
+        auto *ctx_ = ctx->lShrInst();
+        if (ctx_->typeValue() && ctx_->value()) {
+            std::string typeText = ctx_->typeValue()->getText();
+            if (typeText.substr(0, 1) == "i") {
+                size_t spacePos = typeText.find(' ');
+                std::string typeStr = spacePos != std::string::npos ? typeText.substr(0, spacePos) : typeText;
+                inst->resultType = Type::makeInteger(std::stoi(typeStr.substr(1)));
+            }
+            Operand op1;
+            std::string text = ctx_->typeValue()->value() ? ctx_->typeValue()->value()->getText() : "";
+            if (!text.empty() && text[0] == '%') text = text.substr(1);
+            op1.name = text;
+            inst->operands.push_back(std::move(op1));
+            Operand op2;
+            text = ctx_->value()->getText();
+            if (!text.empty() && text[0] == '%') text = text.substr(1);
+            op2.name = text;
+            inst->operands.push_back(std::move(op2));
+        }
+    }
+    else if (ctx->aShrInst()) {
+        inst->opcode = Opcode::AShr;
+        auto *ctx_ = ctx->aShrInst();
+        if (ctx_->typeValue() && ctx_->value()) {
+            std::string typeText = ctx_->typeValue()->getText();
+            if (typeText.substr(0, 1) == "i") {
+                size_t spacePos = typeText.find(' ');
+                std::string typeStr = spacePos != std::string::npos ? typeText.substr(0, spacePos) : typeText;
+                inst->resultType = Type::makeInteger(std::stoi(typeStr.substr(1)));
+            }
+            Operand op1;
+            std::string text = ctx_->typeValue()->value() ? ctx_->typeValue()->value()->getText() : "";
+            if (!text.empty() && text[0] == '%') text = text.substr(1);
+            op1.name = text;
+            inst->operands.push_back(std::move(op1));
+            Operand op2;
+            text = ctx_->value()->getText();
+            if (!text.empty() && text[0] == '%') text = text.substr(1);
+            op2.name = text;
+            inst->operands.push_back(std::move(op2));
+        }
+    }
     else if (ctx->callInst()) {
         inst->opcode = Opcode::Call;
         auto *callCtx = ctx->callInst();
+        
+        // Parse return type (the type before the callee value)
+        if (callCtx->type()) {
+            std::string typeText = callCtx->type()->getText();
+            if (typeText.substr(0, 1) == "i") {
+                size_t spacePos = typeText.find(' ');
+                std::string typeStr = spacePos != std::string::npos ? typeText.substr(0, spacePos) : typeText;
+                inst->resultType = Type::makeInteger(std::stoi(typeStr.substr(1)));
+            }
+        }
         
         // Parse callee name
         if (callCtx->value()) {
@@ -458,6 +594,9 @@ std::unique_ptr<Instruction> IrVisitor::parseInstruction(LLVMIRParser::ValueInst
             }
             inst->calleeName = calleeText;
         }
+        
+        // Parse result name (from the localDef that wraps this instruction)
+        // The result name is set by the caller (parseInstruction) from localDefTerm
         
          // Parse arguments
         if (callCtx->args()) {

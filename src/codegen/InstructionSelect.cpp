@@ -267,6 +267,15 @@ std::vector<LoweredInstruction> InstructionSelector::lowerBasicBlock(const ir::B
             impl->vregToStackOffset[param->name] = localOffset;
             std::string stackReg = "bp" + std::to_string(localOffset);
             
+            // Emit stack allocation instruction
+            LoweredInstruction allocInstr;
+            Instruction286 subSp;
+            subSp.mnemonic = "sub";
+            subSp.operands.push_back("sp");
+            subSp.operands.push_back("4");
+            allocInstr.instructions.push_back(subSp);
+            lowered.push_back(allocInstr);
+            
             // Create a lowered instruction block for parameter setup
             LoweredInstruction paramSetup;
             

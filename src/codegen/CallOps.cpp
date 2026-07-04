@@ -235,8 +235,18 @@ std::vector<LoweredInstruction> lowerCall(SelectorState& state,
         lowered.instructions.push_back(addSp);
     }
 
-    // Result is in AX
+    // Result is in AX (and DX for 32-bit)
     if (!irInst.resultName.empty()) {
+        // Check if this is a 32-bit result
+        bool is32 = false;
+        if (irInst.resultType) {
+            is32 = irInst.resultType->bitWidth == 32;
+        }
+        
+        if (is32) {
+            state.mark32Bit(irInst.resultName);
+        }
+        
         state.updateResultReg(irInst.resultName, "ax");
     }
 

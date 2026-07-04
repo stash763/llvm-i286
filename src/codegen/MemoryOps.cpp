@@ -95,32 +95,70 @@ std::vector<LoweredInstruction> lowerStore(SelectorState& state,
                 xorDx.operands.push_back("dx");
                 xorDx.operands.push_back("dx");
                 lowered.instructions.push_back(xorDx);
-            } else if (valReg.find("bp") != std::string::npos) {
-                // Load low word from stack
-                Instruction286 loadLow;
-                loadLow.mnemonic = "mov";
-                loadLow.operands.push_back("ax");
-                loadLow.operands.push_back("[" + valReg + "]");
-                lowered.instructions.push_back(loadLow);
-                // Load high word from stack
-                Instruction286 loadHigh;
-                loadHigh.mnemonic = "mov";
-                loadHigh.operands.push_back("dx");
-                loadHigh.operands.push_back("[" + valReg + "+2]");
-                lowered.instructions.push_back(loadHigh);
+            } else if (isRegOrParam) {
+                // Check if value is in vregToPhys (register or stack location)
+                auto valPhysIt = state.vregToPhys.find(valName);
+                if (valPhysIt != state.vregToPhys.end()) {
+                    std::string physReg = valPhysIt->second;
+                    if (physReg.find("bp") != std::string::npos) {
+                        // Value is stored as a stack location in vregToPhys
+                        Instruction286 loadLow;
+                        loadLow.mnemonic = "mov";
+                        loadLow.operands.push_back("ax");
+                        loadLow.operands.push_back("[" + physReg + "]");
+                        lowered.instructions.push_back(loadLow);
+                        Instruction286 loadHigh;
+                        loadHigh.mnemonic = "mov";
+                        loadHigh.operands.push_back("dx");
+                        int offset = 0;
+                        std::string offsetStr = physReg.substr(2);
+                        if (!offsetStr.empty()) {
+                            try { offset = std::stoi(offsetStr); } catch (...) {}
+                        }
+                        int newOffset = offset + 2;
+                        std::string offsetStr2 = (newOffset >= 0) ? ("+" + std::to_string(newOffset)) : std::to_string(newOffset);
+                        loadHigh.operands.push_back("[" + std::string("bp") + offsetStr2 + "]");
+                        lowered.instructions.push_back(loadHigh);
+                    } else {
+                        // Value is in a register (e.g., ax from call return)
+                        if (physReg != "ax") {
+                            Instruction286 movInst;
+                            movInst.mnemonic = "mov";
+                            movInst.operands.push_back("ax");
+                            movInst.operands.push_back(physReg);
+                            lowered.instructions.push_back(movInst);
+                        }
+                        // DX already has the high word from call return or previous operation
+                    }
+                } else {
+                    // Should not happen, but fall back to getPhysReg
+                    if (valReg.find("bp") != std::string::npos) {
+                        Instruction286 loadLow;
+                        loadLow.mnemonic = "mov";
+                        loadLow.operands.push_back("ax");
+                        loadLow.operands.push_back("[" + valReg + "]");
+                        lowered.instructions.push_back(loadLow);
+                        Instruction286 loadHigh;
+                        loadHigh.mnemonic = "mov";
+                        loadHigh.operands.push_back("dx");
+                        loadHigh.operands.push_back("[" + valReg + "+2]");
+                        lowered.instructions.push_back(loadHigh);
+                    }
+                }
             } else {
-                // Value is in a register (low word in valReg, high word in next register)
-                Instruction286 movInst;
-                movInst.mnemonic = "mov";
-                movInst.operands.push_back("ax");
-                movInst.operands.push_back(valReg);
-                lowered.instructions.push_back(movInst);
-                // High word is in DX or needs to be loaded
-                Instruction286 movHigh;
-                movHigh.mnemonic = "mov";
-                movHigh.operands.push_back("dx");
-                movHigh.operands.push_back("dx"); // Assume high word is in DX
-                lowered.instructions.push_back(movHigh);
+                // Value is on stack (not in vregToPhys, but in vregToStackOffset)
+                if (valReg.find("bp") != std::string::npos) {
+                    Instruction286 loadLow;
+                    loadLow.mnemonic = "mov";
+                    loadLow.operands.push_back("ax");
+                    loadLow.operands.push_back("[" + valReg + "]");
+                    lowered.instructions.push_back(loadLow);
+                    Instruction286 loadHigh;
+                    loadHigh.mnemonic = "mov";
+                    loadHigh.operands.push_back("dx");
+                    loadHigh.operands.push_back("[" + valReg + "+2]");
+                    lowered.instructions.push_back(loadHigh);
+                }
             }
 
             // For non-alloca pointers, load the address to BX first
