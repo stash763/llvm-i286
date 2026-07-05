@@ -1,7 +1,10 @@
-// test_add_local.c - Test addition with local variables
+extern void printnum(char* buffer, int buffersize, int value);
+
 int main() {
+    char buf[16];
     int a = 20;
     int b = 22;
     int result = a + b;
-    return result;
+    printnum(buf, 16, result);
+    return 0;
 }

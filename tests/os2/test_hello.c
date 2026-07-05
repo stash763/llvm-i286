@@ -1,8 +1,7 @@
-// Simple test program for OS/2 1.x
-// This will be compiled to LLVM IR, then codegen'd to 286 NASM
+extern void printnum(char* buffer, int buffersize, int value);
 
-int main() {
-    // Return a simple value for now
-    // Later we'll add OS/2 API calls for text display
-    return 42;
+int main(void) {
+    char buf[16];
+    printnum(buf, 16, 42);
+    return 0;
 }

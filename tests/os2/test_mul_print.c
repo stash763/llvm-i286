@@ -1,9 +1,12 @@
-// test_mul_print.c - Test multiplication with string output
+extern void printnum(char* buffer, int buffersize, int value);
+
 int mul_test(int a, int b) {
     return a * b;
 }
 
 int main() {
+    char buf[16];
     int result = mul_test(100, 200);
-    return result & 0xFF;  // Return low byte
+    printnum(buf, 16, result & 0xFF);
+    return 0;
 }

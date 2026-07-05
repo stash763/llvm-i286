@@ -1,11 +1,12 @@
-// test_mul.c - Test multiplication with local variables
+extern void printnum(char* buffer, int buffersize, int value);
+
 int mul_test(int a, int b) {
     return a * b;
 }
 
 int main() {
-    int a = 100;
-    int b = 200;
-    int result = mul_test(a, b);
-    return result;
+    char buf[16];
+    int result = mul_test(100, 200);
+    printnum(buf, 16, result);
+    return 0;
 }

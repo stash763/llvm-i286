@@ -1,9 +1,12 @@
-// test_mul32.c - Test 32-bit multiplication
+extern void printnum(char* buffer, int buffersize, int value);
+
 int mul_test(int a, int b) {
     return a * b;
 }
 
 int main() {
+    char buf[16];
     int result = mul_test(100, 200);
-    return result & 0xFF;  // Return low byte
+    printnum(buf, 16, result);
+    return 0;
 }

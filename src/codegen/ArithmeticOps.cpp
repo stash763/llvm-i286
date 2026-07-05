@@ -504,11 +504,12 @@ std::vector<LoweredInstruction> lowerMul(SelectorState& state,
             callMul.operands.push_back("far _MultiplyI32");
             lowered.instructions.push_back(callMul);
 
-            // Store result (DI:SI) to stack
+            // Store result to stack
+            // _MultiplyI32 returns: si = high word (MSB), di = low word (LSB)
             Instruction286 storeResultLow;
             storeResultLow.mnemonic = "mov";
             storeResultLow.operands.push_back("[" + resultStack + "]");
-            storeResultLow.operands.push_back("si");
+            storeResultLow.operands.push_back("di");
             lowered.instructions.push_back(storeResultLow);
 
             Instruction286 storeResultHigh;
@@ -525,7 +526,7 @@ std::vector<LoweredInstruction> lowerMul(SelectorState& state,
             } else {
                 storeResultHigh.operands.push_back("[" + resultStack + "+2]");
             }
-            storeResultHigh.operands.push_back("di");
+            storeResultHigh.operands.push_back("si");
             lowered.instructions.push_back(storeResultHigh);
 
             // Update vreg mapping
@@ -687,14 +688,15 @@ std::vector<LoweredInstruction> lowerDivRem(SelectorState& state,
                     storeResultHigh.operands.push_back("bx");
                     lowered.instructions.push_back(storeResultHigh);
                 } else {
-                    // Store SI (low word of quotient)
+                    // _DivideI32 returns: si = high word (MSB), di = low word (LSB)
+                    // Store DI (low word of quotient)
                     Instruction286 storeResultLow;
                     storeResultLow.mnemonic = "mov";
                     storeResultLow.operands.push_back("[" + resultStack + "]");
-                    storeResultLow.operands.push_back("si");
+                    storeResultLow.operands.push_back("di");
                     lowered.instructions.push_back(storeResultLow);
 
-                    // Store DI (high word of quotient)
+                    // Store SI (high word of quotient)
                     Instruction286 storeResultHigh;
                     storeResultHigh.mnemonic = "mov";
                     if (resultStack.find("bp") != std::string::npos) {
@@ -709,7 +711,7 @@ std::vector<LoweredInstruction> lowerDivRem(SelectorState& state,
                     } else {
                         storeResultHigh.operands.push_back("[" + resultStack + "+2]");
                     }
-                    storeResultHigh.operands.push_back("di");
+                    storeResultHigh.operands.push_back("si");
                     lowered.instructions.push_back(storeResultHigh);
                 }
 
