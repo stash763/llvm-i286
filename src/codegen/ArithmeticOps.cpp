@@ -567,7 +567,7 @@ std::vector<LoweredInstruction> lowerMul(SelectorState& state,
             callMul.operands.push_back("far _MultiplyI32");
             lowered.instructions.push_back(callMul);
 
-            // Store result to stack
+        // Store result to stack
             // _MultiplyI32 returns: si = high word (MSB), di = low word (LSB)
             Instruction286 storeResultLow;
             storeResultLow.mnemonic = "mov";

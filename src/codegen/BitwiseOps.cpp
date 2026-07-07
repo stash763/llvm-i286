@@ -83,7 +83,14 @@ static std::vector<LoweredInstruction> lowerBinaryOp(
         bool is32 = irInst.resultType && irInst.resultType->bitWidth == 32;
         
         if (is32) {
-            // For 32-bit results, store to stack (BX holds high word, AX holds low word)
+            // For 32-bit results, zero high word (DX) and store to stack
+            // This is correct for AND/OR/XOR with constants that fit in 16 bits
+            Instruction286 zeroHigh;
+            zeroHigh.mnemonic = "xor";
+            zeroHigh.operands.push_back("dx");
+            zeroHigh.operands.push_back("dx");
+            lowered.instructions.push_back(zeroHigh);
+            
             state.currentStackOffset -= 4;
             state.tempSpaceInBlock += 4;
             int stackOffset = state.currentStackOffset;
@@ -99,11 +106,11 @@ static std::vector<LoweredInstruction> lowerBinaryOp(
             storeLow.operands.push_back("ax");
             lowered.instructions.push_back(storeLow);
             
-            // Store high word (BX)
+            // Store high word (DX, zeroed)
             Instruction286 storeHigh;
             storeHigh.mnemonic = "mov";
             storeHigh.operands.push_back("[" + highStack + "]");
-            storeHigh.operands.push_back("bx");
+            storeHigh.operands.push_back("dx");
             lowered.instructions.push_back(storeHigh);
             
             state.mark32Bit(irInst.resultName);
