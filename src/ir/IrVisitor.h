@@ -26,6 +26,7 @@ public:
     std::any visitFuncDef(LLVMIRParser::FuncDefContext *ctx) override;
     std::any visitFuncDecl(LLVMIRParser::FuncDeclContext *ctx) override;
     std::any visitBasicBlock(LLVMIRParser::BasicBlockContext *ctx) override;
+    std::any visitIndirectSymbolDef(LLVMIRParser::IndirectSymbolDefContext *ctx) override;
     
     std::unique_ptr<Type> parseType(LLVMIRParser::TypeContext *ctx);
     std::unique_ptr<Type> parseIntType(LLVMIRParser::IntTypeContext *ctx);

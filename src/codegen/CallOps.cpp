@@ -31,6 +31,12 @@ std::vector<LoweredInstruction> lowerCall(SelectorState& state,
     if (isLLVMMemcpy) {
         callee = "memcpy";
     }
+    
+    // Resolve alias: if callee is an alias, use the target function
+    auto aliasIt = state.aliasMap.find(callee);
+    if (aliasIt != state.aliasMap.end()) {
+        callee = aliasIt->second;
+    }
 
     // Push arguments (right-to-left order)
     // Arguments are in irInst.callArgs (if available) or irInst.operands[1..n]

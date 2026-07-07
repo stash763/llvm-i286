@@ -38,6 +38,9 @@ struct SelectorState {
 
     // Function declarations: maps function name to parameter bit widths
     std::map<std::string, std::vector<int>> funcParamBitWidths;
+    
+    // Alias map: maps alias name to target name (for weak_alias resolution)
+    std::map<std::string, std::string> aliasMap;
 
     // Counter for generating unique labels
     int labelCounter = 0;

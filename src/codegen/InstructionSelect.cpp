@@ -23,6 +23,10 @@ void InstructionSelector::setFunctionDeclarations(const std::map<std::string, st
     impl->funcParamBitWidths = decls;
 }
 
+void InstructionSelector::setAliasMap(const std::map<std::string, std::string>& aliases) {
+    impl->aliasMap = aliases;
+}
+
 std::vector<LoweredInstruction> InstructionSelector::lowerInstruction(const ir::Instruction& irInst) {
     std::vector<LoweredInstruction> loweredVec;
     LoweredInstruction lowered;

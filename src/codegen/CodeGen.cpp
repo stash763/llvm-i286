@@ -47,6 +47,9 @@ std::string CodeGen::generate(const ir::Module& module) {
     }
     selector.setFunctionDeclarations(funcParamBitWidths);
     
+    // Pass alias map to selector for weak_alias resolution
+    selector.setAliasMap(module.aliases);
+    
     std::string allFunctions;
     
     // Determine entry function name: only "main" gets a start entry point.

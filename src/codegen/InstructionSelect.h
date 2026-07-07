@@ -36,6 +36,9 @@ public:
     // Set function declarations for parameter type lookup
     void setFunctionDeclarations(const std::map<std::string, std::vector<int>>& decls);
     
+    // Set alias map for weak_alias resolution
+    void setAliasMap(const std::map<std::string, std::string>& aliases);
+    
     // Lower an LLVM IR instruction to 286 instruction sequence(s)
     std::vector<LoweredInstruction> lowerInstruction(const ir::Instruction& irInst);
     

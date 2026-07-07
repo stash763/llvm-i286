@@ -78,10 +78,49 @@ std::unique_ptr<Module> IrVisitor::visitModule(LLVMIRParser::CompilationUnitCont
             }
             
             currentModule->globals.push_back(std::move(gv));
+        } else if (entity->indirectSymbolDef()) {
+            // Handle alias declarations: @alias = alias ... @target
+            visitIndirectSymbolDef(entity->indirectSymbolDef());
         }
     }
     
     return std::move(currentModule);
+}
+
+std::any IrVisitor::visitIndirectSymbolDef(LLVMIRParser::IndirectSymbolDefContext *ctx) {
+    // Parse alias name
+    std::string aliasName;
+    if (ctx->GlobalIdent()) {
+        aliasName = ctx->GlobalIdent()->getText();
+        if (!aliasName.empty() && aliasName[0] == '@') {
+            aliasName = aliasName.substr(1);
+        }
+    }
+    
+    // Parse target name from indirectSymbol
+    // The indirectSymbol can be typeConst, bitCastExpr, etc.
+    // For simple aliases, it's usually a typeConst with a GlobalIdent reference
+    std::string targetName;
+    if (ctx->indirectSymbol()) {
+        // Get the text of the indirectSymbol and look for @name pattern
+        std::string symbolText = ctx->indirectSymbol()->getText();
+        // Find the last @ in the text (the target function/global name)
+        size_t atPos = symbolText.rfind('@');
+        if (atPos != std::string::npos) {
+            targetName = symbolText.substr(atPos + 1);
+            // Remove any trailing characters (like function signature)
+            size_t parenPos = targetName.find('(');
+            if (parenPos != std::string::npos) {
+                targetName = targetName.substr(0, parenPos);
+            }
+        }
+    }
+    
+    if (!aliasName.empty() && !targetName.empty()) {
+        currentModule->aliases[aliasName] = targetName;
+    }
+    
+    return std::any();
 }
 
 std::any IrVisitor::visitFuncDef(LLVMIRParser::FuncDefContext *ctx) {

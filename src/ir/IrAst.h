@@ -238,6 +238,7 @@ struct Module {
     std::vector<std::unique_ptr<Function>> functions;
     std::vector<std::unique_ptr<GlobalVariable>> globals;
     std::map<std::string, std::unique_ptr<Type>> typeDefinitions;
+    std::map<std::string, std::string> aliases; // alias name -> target name
 };
 
 } // namespace ir
