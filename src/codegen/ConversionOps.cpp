@@ -174,27 +174,17 @@ std::vector<LoweredInstruction> lowerSExt(SelectorState& state,
             storeLow.operands.push_back("ax");
             lowered.instructions.push_back(storeLow);
 
-            // Sign-extend: if high word of source was loaded, store it; otherwise sign-extend ax to dx
-            if (srcIsMem && srcReg.find("bp") != std::string::npos) {
-                // Source is on stack, load high word into dx
-                int offset = 0;
-                std::string offsetStr = srcReg.substr(2);
-                if (!offsetStr.empty()) {
-                    try { offset = std::stoi(offsetStr); } catch (...) {}
-                }
-                int newOffset = offset + 2;
-                std::string offsetStr2 = (newOffset >= 0) ? ("+" + std::to_string(newOffset)) : std::to_string(newOffset);
-                Instruction286 loadHigh;
-                loadHigh.mnemonic = "mov";
-                loadHigh.operands.push_back("dx");
-                loadHigh.operands.push_back("[" + std::string("bp") + offsetStr2 + "]");
-                lowered.instructions.push_back(loadHigh);
-            } else {
-                // Sign-extend ax to dx (cbw/cwd)
+           // Sign-extend: for 8-bit to 32-bit, use cbw then cwd
+            // For 16-bit to 32-bit, use cwd
+            {
+                // First sign-extend al to ax if source was 8-bit
+                Instruction286 cbwInst;
+                cbwInst.mnemonic = "cbw";
+                lowered.instructions.push_back(cbwInst);
+
+                // Then sign-extend ax to dx:ax
                 Instruction286 cwdInst;
                 cwdInst.mnemonic = "cwd";
-                cwdInst.operands.push_back("dx");
-                cwdInst.operands.push_back("ax");
                 lowered.instructions.push_back(cwdInst);
             }
 

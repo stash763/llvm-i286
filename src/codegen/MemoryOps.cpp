@@ -192,39 +192,21 @@ std::vector<LoweredInstruction> lowerStore(SelectorState& state,
                 }
             }
 
-            // For non-alloca pointers, load the address to BX first
+            // For non-alloca pointers, load the 32-bit address for dereferencing
             std::string dest;
             if (ptrReg.find("bp") != std::string::npos && ptrIsAlloca) {
                 // Alloca result: stack location IS the address
                 dest = "[" + ptrReg + "]";
             } else if (ptrReg.find("bp") != std::string::npos) {
-                // Non-alloca: load the pointer value to BX, use [bx] as destination
+                // Non-alloca: load the 32-bit pointer value, use 32-bit addressing
+                // For flat memory model, use 32-bit register (eax) for dereferencing
                 Instruction286 loadAddr;
                 loadAddr.mnemonic = "mov";
-                loadAddr.operands.push_back("bx");
-                loadAddr.operands.push_back("[" + ptrReg + "]");
+                loadAddr.operands.push_back("eax");
+                loadAddr.operands.push_back("dword [" + ptrReg + "]");
                 lowered.instructions.push_back(loadAddr);
 
-                // Load selector into ES for far pointer access
-                Instruction286 loadSelector;
-                loadSelector.mnemonic = "mov";
-                loadSelector.operands.push_back("es");
-                // Calculate high word offset
-                if (ptrReg.find("bp") != std::string::npos) {
-                    int offset = 0;
-                    std::string offsetStr = ptrReg.substr(2);
-                    if (!offsetStr.empty()) {
-                        try { offset = std::stoi(offsetStr); } catch (...) {}
-                    }
-                    int newOffset = offset + 2;
-                    std::string offsetStr2 = (newOffset >= 0) ? ("+" + std::to_string(newOffset)) : std::to_string(newOffset);
-                    loadSelector.operands.push_back("word [" + std::string("bp") + offsetStr2 + "]");
-                } else {
-                    loadSelector.operands.push_back("word [" + ptrReg + "+2]");
-                }
-                lowered.instructions.push_back(loadSelector);
-
-                dest = "[" + std::string("es:bx") + "]";
+                dest = "[" + std::string("eax") + "]";
             } else {
                 dest = ptrReg;
             }
@@ -291,34 +273,15 @@ std::vector<LoweredInstruction> lowerStore(SelectorState& state,
             if (ptrReg.find("bp") != std::string::npos && ptrIsAlloca) {
                 // Alloca result: stack location IS the address
                 dest = "[" + ptrReg + "]";
-            } else if (ptrReg.find("bp") != std::string::npos) {
-                // Non-alloca: load the pointer value to BX, use [bx] as destination
+       } else if (ptrReg.find("bp") != std::string::npos) {
+                // Non-alloca: load the 32-bit pointer value, use 32-bit addressing
                 Instruction286 loadAddr;
                 loadAddr.mnemonic = "mov";
-                loadAddr.operands.push_back("bx");
-                loadAddr.operands.push_back("[" + ptrReg + "]");
+                loadAddr.operands.push_back("eax");
+                loadAddr.operands.push_back("dword [" + ptrReg + "]");
                 lowered.instructions.push_back(loadAddr);
 
-                // Load selector into ES for far pointer access
-                Instruction286 loadSelector;
-                loadSelector.mnemonic = "mov";
-                loadSelector.operands.push_back("es");
-                // Calculate high word offset
-                if (ptrReg.find("bp") != std::string::npos) {
-                    int offset = 0;
-                    std::string offsetStr = ptrReg.substr(2);
-                    if (!offsetStr.empty()) {
-                        try { offset = std::stoi(offsetStr); } catch (...) {}
-                    }
-                    int newOffset = offset + 2;
-                    std::string offsetStr2 = (newOffset >= 0) ? ("+" + std::to_string(newOffset)) : std::to_string(newOffset);
-                    loadSelector.operands.push_back("word [" + std::string("bp") + offsetStr2 + "]");
-                } else {
-                    loadSelector.operands.push_back("word [" + ptrReg + "+2]");
-                }
-                lowered.instructions.push_back(loadSelector);
-
-                dest = "[" + std::string("es:bx") + "]";
+                dest = "[" + std::string("eax") + "]";
             } else {
                 dest = ptrReg;
             }
@@ -470,38 +433,20 @@ std::vector<LoweredInstruction> lowerLoad(SelectorState& state,
 
                 // For non-alloca pointers, load the address to BX first
                 if (!ptrIsAlloca) {
+                    // Load the 32-bit pointer value into eax for flat model dereferencing
                     Instruction286 loadAddr;
                     loadAddr.mnemonic = "mov";
-                    loadAddr.operands.push_back("bx");
-                    loadAddr.operands.push_back("[" + ptrReg + "]");
+                    loadAddr.operands.push_back("eax");
+                    loadAddr.operands.push_back("dword [" + ptrReg + "]");
                     lowered.instructions.push_back(loadAddr);
 
-                    // Load selector into ES for far pointer access
-                    Instruction286 loadSelector;
-                    loadSelector.mnemonic = "mov";
-                    loadSelector.operands.push_back("es");
-                    // Calculate high word offset
-                    if (ptrReg.find("bp") != std::string::npos) {
-                        int offset = 0;
-                        std::string offsetStr = ptrReg.substr(2);
-                        if (!offsetStr.empty()) {
-                            try { offset = std::stoi(offsetStr); } catch (...) {}
-                        }
-                        int newOffset = offset + 2;
-                        std::string offsetStr2 = (newOffset >= 0) ? ("+" + std::to_string(newOffset)) : std::to_string(newOffset);
-                        loadSelector.operands.push_back("word [" + std::string("bp") + offsetStr2 + "]");
-                    } else {
-                        loadSelector.operands.push_back("word [" + ptrReg + "+2]");
-                    }
-                    lowered.instructions.push_back(loadSelector);
-
-                    // Load from [bx] into destReg (or AX then store to stack for 8-bit)
+                    // Load from [eax] into destReg (or AX then store to stack for 8-bit)
                     if (is8) {
                         // 8-bit load: load into AL, then zero-extend to AX
                         Instruction286 loadInst;
                         loadInst.mnemonic = "mov";
                         loadInst.operands.push_back("al");
-                        loadInst.operands.push_back("byte es:[bx]");
+                        loadInst.operands.push_back("byte [eax]");
                         lowered.instructions.push_back(loadInst);
 
                         // Zero-extend: set AH to 0
@@ -537,12 +482,12 @@ std::vector<LoweredInstruction> lowerLoad(SelectorState& state,
 
                         // Update vreg mapping to point to stack
                         state.vregToPhys[irInst.resultName] = resultStack;
-                    } else {
+                } else {
                         // 16-bit load
                         Instruction286 loadInst;
                         loadInst.mnemonic = "mov";
                         loadInst.operands.push_back(destReg);
-                        loadInst.operands.push_back("[" + std::string("bx") + "]");
+                        loadInst.operands.push_back("[" + std::string("eax") + "]");
                         lowered.instructions.push_back(loadInst);
                     }
                 } else {

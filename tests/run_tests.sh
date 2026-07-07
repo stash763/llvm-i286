@@ -77,6 +77,7 @@ EXPECTED_OUTPUT[test_mul_print]="32"
 EXPECTED_OUTPUT[test_printnum]="42"
 EXPECTED_OUTPUT[test_memcpy]="0"
 EXPECTED_OUTPUT[test_ptrtoint]="42"
+EXPECTED_OUTPUT[test_strlen]="5"
 
 # Tests that use unsupported features (expected to fail at compile or link time)
 declare -A EXPECTED_FAILURES
