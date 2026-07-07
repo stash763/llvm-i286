@@ -106,10 +106,14 @@ std::vector<LoweredInstruction> lowerStore(SelectorState& state,
                 xorDx.operands.push_back("dx");
                 xorDx.operands.push_back("dx");
                 lowered.instructions.push_back(xorDx);
-            } else if (isGlobal) {
+           } else if (isGlobal) {
                 // Global variable: load its address
                 // The global name starts with @, remove it for NASM
                 std::string globalName = valName.substr(1); // Remove @ prefix
+                // If name starts with '.', replace with '_' for NASM compatibility
+                if (!globalName.empty() && globalName[0] == '.') {
+                    globalName[0] = '_';
+                }
                 // For 16-bit protected mode with flat memory model
                 Instruction286 movAx;
                 movAx.mnemonic = "mov";

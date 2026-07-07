@@ -64,7 +64,7 @@ This was a critical fix that unblocked proper code generation for all subsequent
 
 ## Current Test Status
 
-**Existing test suite:** 13/13 pass (2 skips for known `printf` limitations)
+**Existing test suite:** 14/14 pass (2 skips for known `printf` limitations)
 
 ```
 Test 1: hello... PASS (output: 0)
@@ -79,7 +79,8 @@ Test 9: test_mul_print... PASS (output: 32)
 Test 10: test_printf... SKIP (known limitation)
 Test 11: test_printf_simple... SKIP (known limitation)
 Test 12: test_printnum... PASS (output: 42)
-Test 13: test_return... PASS (output: 42)
+Test 13: test_ptrtoint... PASS (output: 42)
+Test 14: test_return... PASS (output: 42)
 ```
 
 **Exit path status:** ✅ FIXED
@@ -100,17 +101,22 @@ buffer addresses (the `ptrtoint` issue with global variables needs a codegen fix
 
 ## Current Priorities (In Order)
 
-1. **Fix ptrtoint codegen** — global variable addresses not correctly passed as function arguments (blocks write/read syscalls)
-2. **Port string/ctype functions** — low-risk codegen testing and coverage
+1. ✅ **Fix ptrtoint codegen** — COMPLETED (ptrtoint/inttoptr roundtrip verified)
+2. **Port string/ctype functions** — low-risk codegen testing and coverage (NEXT)
 3. **Integration tests** — verify the full pipeline works with musl functions
 4. **Port exit/startup/unistd** — unblock full musl program execution
 5. **Musl build integration** — build full libc.a
+
+**Known codegen issues blocking string functions:**
+- Pointer arithmetic in loops generates invalid 16-bit addressing modes
+- Global variable references (`.str` symbols) need special handling in all contexts
+- Complex control flow with multiple basic blocks can cause stack corruption
 
 ---
 
 ## Remaining Work
 
-### Phase 4a: Fix ptrtoint Codegen for Global Variables
+### Phase 4a: Fix ptrtoint Codegen for Global Variables ✅ COMPLETED
 
 **Problem:** When a function argument is a global variable (e.g., `write(1, msg, 6)` where `msg` is a global array), the codegen generates incorrect code. The `ptrtoint` instruction converts a pointer to an integer, but the codegen doesn't handle this correctly for global variables.
 
@@ -122,14 +128,23 @@ __os2_syscall3(2, 1, msg, 6);  // msg should be passed as a pointer/address
 
 **Root cause:** The `CallOps.cpp` argument handling doesn't correctly resolve global variable addresses when they're passed as function arguments. The LLVM IR uses `ptrtoint ptr @msg to i32`, which needs special handling in the codegen.
 
-**Files to modify:**
-- `src/codegen/CallOps.cpp` — add handling for `ptrtoint` of global variables
-- Possibly `src/ir/IrVisitor.cpp` — add `ptrtoint` instruction parsing if not already done
+**Fix implemented:**
+- Added `lowerPtrToInt` and `lowerIntToPtr` in `ConversionOps.cpp`
+- Added case statements for `PtrToInt` and `IntToPtr` opcodes in `InstructionSelect.cpp`
+- Fixed IR parser to extract source operand for `ptrtoint`/`inttoptr` instructions
+- Fixed `__os2_syscall3` wrapper to use caller-cleanup convention (`ret` instead of `ret 12`)
+- Added `test_ptrtoint.c` to verify roundtrip works correctly
 
-**Approach:**
-1. Identify how `ptrtoint` appears in the LLVM IR for global variables
-2. Modify the call argument handling to recognize `ptrtoint` of globals
-3. Generate correct NASM code to push the address (segment:offset or flat address)
+**Files modified:**
+- `src/codegen/ConversionOps.cpp` — added `lowerPtrToInt` and `lowerIntToPtr`
+- `src/codegen/InstructionSelect.cpp` — added case statements
+- `src/codegen/InstructionSelectInternal.h` — added declarations
+- `src/ir/IrVisitor.cpp` — fixed operand extraction for `ptrtoint`/`inttoptr`
+- `runtime/os2_syscall.asm` — fixed calling convention
+- `tests/run_tests.sh` — updated to run lx_loader natively
+- `tests/os2/test_ptrtoint.c` — new test for ptrtoint/inttoptr roundtrip
+
+**Result:** `ptrtoint`/`inttoptr` roundtrip now works correctly (verified with test that prints 42).
 
 ---
 
@@ -250,8 +265,8 @@ Phase 2:  Codegen alias support                   ✅ DONE
 Phase 3:  Syscall layer (os2_syscall.asm)         ✅ DONE
 Phase 3.5: Fixed -m32 flag in clang_i286         ✅ DONE
 Phase 3.7: Fixed syscall handler return paths    ✅ DONE
-Phase 4a: Fix ptrtoint codegen for global vars   [NEXT - CRITICAL]
-Phase 4b: Port string/ctype functions             [after 4a]
+Phase 4a: Fix ptrtoint codegen for global vars   ✅ COMPLETED
+Phase 4b: Port string/ctype functions             [NEXT - IN PROGRESS]
 Phase 5:  Integration tests                       [after 4b]
 Phase 6:  Port exit/startup/unistd                [after 5 — unblocks full musl programs]
 Phase 7:  Musl build integration                  [future]
