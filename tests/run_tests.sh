@@ -78,12 +78,15 @@ EXPECTED_OUTPUT[test_printnum]="42"
 EXPECTED_OUTPUT[test_memcpy]="0"
 EXPECTED_OUTPUT[test_ptrtoint]="42"
 EXPECTED_OUTPUT[test_strlen]="5"
+EXPECTED_OUTPUT[test_strcmp]="0"
+EXPECTED_OUTPUT[test_memcmp]="0"
 
 # Tests that use unsupported features (expected to fail at compile or link time)
 declare -A EXPECTED_FAILURES
 EXPECTED_FAILURES[test_printf]=1
 EXPECTED_FAILURES[test_printf_simple]=1
 EXPECTED_FAILURES[test_mul_print]=1
+EXPECTED_FAILURES[test_isalpha]=1
 
 # Test counters
 PASS=0
