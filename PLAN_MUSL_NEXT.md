@@ -82,17 +82,58 @@ Test 12: test_printnum... PASS (output: 42)
 Test 13: test_return... PASS (output: 42)
 ```
 
-**Note on exit path testing:** Tests that call `__os2_syscall*` functions segfault in lx_loader.
-The existing tests use the codegen's built-in `call far DOSEXIT` exit sequence which works.
-The `__os2_syscall*` path through the runtime library may have segment:offset or linking issues
-that need further investigation. The syscall implementation is structurally correct but runtime
-integration with lx_loader/libdoscalls.so needs debugging.
+**Exit path status:** ✅ FIXED
+
+The exit path through `__os2_syscall*` now works correctly. The issue was that syscall handlers
+were using `jmp return_enosys` to a shared label, which caused incorrect control flow. Each handler
+now has an inline return sequence.
+
+Verified:
+- `__os2_syscall0(999)` returns -38 (ENOSYS) correctly
+- `__os2_syscall2(6, 0)` calls DosExit and terminates cleanly
+- All syscall handlers (0-6) are properly dispatched
+
+**Note on write syscall:** The DosWrite implementation needs further work to properly handle
+buffer addresses (the `ptrtoint` issue with global variables needs a codegen fix).
+
+---
+
+## Current Priorities (In Order)
+
+1. **Fix ptrtoint codegen** — global variable addresses not correctly passed as function arguments (blocks write/read syscalls)
+2. **Port string/ctype functions** — low-risk codegen testing and coverage
+3. **Integration tests** — verify the full pipeline works with musl functions
+4. **Port exit/startup/unistd** — unblock full musl program execution
+5. **Musl build integration** — build full libc.a
 
 ---
 
 ## Remaining Work
 
-### Phase 4: Port String/Ctype Functions
+### Phase 4a: Fix ptrtoint Codegen for Global Variables
+
+**Problem:** When a function argument is a global variable (e.g., `write(1, msg, 6)` where `msg` is a global array), the codegen generates incorrect code. The `ptrtoint` instruction converts a pointer to an integer, but the codegen doesn't handle this correctly for global variables.
+
+**Example failure:**
+```c
+const char msg[] = "hello\n";
+__os2_syscall3(2, 1, msg, 6);  // msg should be passed as a pointer/address
+```
+
+**Root cause:** The `CallOps.cpp` argument handling doesn't correctly resolve global variable addresses when they're passed as function arguments. The LLVM IR uses `ptrtoint ptr @msg to i32`, which needs special handling in the codegen.
+
+**Files to modify:**
+- `src/codegen/CallOps.cpp` — add handling for `ptrtoint` of global variables
+- Possibly `src/ir/IrVisitor.cpp` — add `ptrtoint` instruction parsing if not already done
+
+**Approach:**
+1. Identify how `ptrtoint` appears in the LLVM IR for global variables
+2. Modify the call argument handling to recognize `ptrtoint` of globals
+3. Generate correct NASM code to push the address (segment:offset or flat address)
+
+---
+
+### Phase 4b: Port String/Ctype Functions
 
 **Approach:** Compile each function individually through the pipeline (standalone tests, no full libc linkage).
 
@@ -101,7 +142,7 @@ integration with lx_loader/libdoscalls.so needs debugging.
 -I musl/include -I musl/arch/i286 -I musl/arch/generic
 ```
 
-### 4a. Trivially simple functions (pure C, ≤25 lines, no deps)
+**Trivially simple functions (pure C, ≤25 lines, no deps):**
 
 | Function | File | Lines | What it tests |
 |---|---|---|---|
@@ -118,7 +159,7 @@ integration with lx_loader/libdoscalls.so needs debugging.
 | `isascii` | `ctype/isascii.c` | ~7 | trivial |
 | `toascii` | `ctype/toascii.c` | ~7 | trivial |
 
-### 4b. Moderate complexity (depends on other string functions)
+**Moderate complexity (depends on other string functions):**
 
 | Function | File | Lines | Depends on | weak_alias? |
 |---|---|---|---|---|
@@ -132,9 +173,7 @@ integration with lx_loader/libdoscalls.so needs debugging.
 
 ### Phase 5: Integration Tests
 
-#### 5a. String/Ctype tests (Phase 4 dependencies)
-
-Create standalone test programs in `tests/os2/`:
+**String/Ctype tests (Phase 4b dependencies):**
 
 | Test | Source | Tests | Expected |
 |---|---|---|---|
@@ -144,7 +183,7 @@ Create standalone test programs in `tests/os2/`:
 | `test_isalpha.c` | standalone, call isalpha | isalpha | exit 0 |
 | `test_isdigit.c` | standalone, call isdigit | isdigit | exit 0 |
 
-#### 5b. Syscall tests (Phase 3 dependencies)
+**Syscall tests (Phase 4a + Phase 3 dependencies):**
 
 | Test | Source | Tests | Expected |
 |---|---|---|---|
@@ -152,43 +191,42 @@ Create standalone test programs in `tests/os2/`:
 | `test_write.c` | musl unistd.h → write(1, "hello\n", 6) | DosWrite | prints "hello\n" |
 | `test_hello_musl.c` | write(1, msg, strlen(msg)) | string + write | prints message |
 
-#### 5c. Update test runner
-
+**Update test runner:**
 - Add new tests to `EXPECTED_OUTPUT` in `tests/run_tests.sh`
 - Update `EXPECTED_FAILURES` as needed
 
 ---
 
-### Phase 6: Next Musl Components After String Functions
+### Phase 6: Port Exit/Startup/Unistd
 
-After string/ctype functions are working, the next musl components to port are those that unblock full program execution through libc:
+After string functions and ptrtoint fix are working, port the components that unblock full musl program execution:
 
-#### 6a. Exit Path (unblocks clean shutdown)
+**Exit Path (unblocks clean shutdown):**
 | File | Purpose | Depends on |
 |---|---|---|
 | `src/exit/_Exit.c` | Calls `__syscall(SYS_exit_group, ec)` | syscall layer ✅ |
 | `src/exit/exit.c` | Calls `__funcs_on_exit`, `__libc_exit_fini`, `__stdio_exit`, then `_Exit` | weak_alias, internal libc |
 | `src/exit/atexit.c` | Register atexit handlers | weak_alias, internal libc |
 
-#### 6b. Startup Code (unblocks `main()` invocation)
+**Startup Code (unblocks `main()` invocation):**
 | File | Purpose | Depends on |
 |---|---|---|
 | `src/env/__libc_start_main.c` | Calls `main(argc, argv, envp)` then `exit()` | syscall layer, internal libc |
 | `src/internal/libc.c` | Defines `__libc` global, `__progname` | none (pure data) |
 
-#### 6c. Stdio Basics (unblocks `printf`/`fprintf`)
+**Unistd (I/O syscalls):**
+| File | Purpose | Depends on |
+|---|---|---|
+| `src/unistd/write.c` | Calls `__syscall(SYS_write, fd, buf, count)` | syscall layer ✅, ptrtoint fix |
+| `src/unistd/read.c` | Calls `__syscall(SYS_read, fd, buf, count)` | syscall layer ✅, ptrtoint fix |
+| `src/unistd/close.c` | Calls `__syscall(SYS_close, fd)` | syscall layer ✅ |
+
+**Stdio Basics (unblocks `printf`/`fprintf`):**
 | File | Purpose | Depends on |
 |---|---|---|
 | `src/stdio/__stdio_exit.c` | Flush/close streams on exit | weak_alias |
 | `src/stdio/__stdout_write.c` | Write to stdout file descriptor | `write()` syscall |
 | `src/stdio/__overflow.c` | Handle buffer overflow for output streams | internal stdio |
-
-#### 6d. Unistd (I/O syscalls)
-| File | Purpose | Depends on |
-|---|---|---|
-| `src/unistd/write.c` | Calls `__syscall(SYS_write, fd, buf, count)` | syscall layer ✅ |
-| `src/unistd/read.c` | Calls `__syscall(SYS_read, fd, buf, count)` | syscall layer ✅ |
-| `src/unistd/close.c` | Calls `__syscall(SYS_close, fd)` | syscall layer ✅ |
 
 ---
 
@@ -206,15 +244,17 @@ Once individual file compilation works, integrate into musl's build system:
 ## Execution Order
 
 ```
-Phase 0: Build 2ine (podman)                    ✅ DONE
-Phase 1: Build runtime.lib                       ✅ DONE
-Phase 2: Codegen alias support                   ✅ DONE
-Phase 3: Syscall layer (os2_syscall.asm)         ✅ DONE
-Phase 3.5: Fixed -m32 flag in clang_i286        ✅ DONE
-Phase 4: Port string/ctype functions             [NEXT]
-Phase 5: Integration tests                       [after Phase 4]
-Phase 6: Debug exit path runtime integration     [after Phase 5 — unblocks full musl programs]
-Phase 7: Musl build integration                  [future]
+Phase 0:  Build 2ine (podman)                    ✅ DONE
+Phase 1:  Build runtime.lib                       ✅ DONE
+Phase 2:  Codegen alias support                   ✅ DONE
+Phase 3:  Syscall layer (os2_syscall.asm)         ✅ DONE
+Phase 3.5: Fixed -m32 flag in clang_i286         ✅ DONE
+Phase 3.7: Fixed syscall handler return paths    ✅ DONE
+Phase 4a: Fix ptrtoint codegen for global vars   [NEXT - CRITICAL]
+Phase 4b: Port string/ctype functions             [after 4a]
+Phase 5:  Integration tests                       [after 4b]
+Phase 6:  Port exit/startup/unistd                [after 5 — unblocks full musl programs]
+Phase 7:  Musl build integration                  [future]
 ```
 
 ---
