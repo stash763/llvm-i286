@@ -26,6 +26,12 @@ std::vector<LoweredInstruction> lowerCall(SelectorState& state,
         callee = irInst.operands[0].name;
     }
 
+    // Handle LLVM intrinsics: lower llvm.memcpy to memcpy call
+    bool isLLVMMemcpy = (callee.find("llvm.memcpy") != std::string::npos);
+    if (isLLVMMemcpy) {
+        callee = "memcpy";
+    }
+
     // Push arguments (right-to-left order)
     // Arguments are in irInst.callArgs (if available) or irInst.operands[1..n]
     std::vector<std::string> args;
@@ -38,9 +44,20 @@ std::vector<LoweredInstruction> lowerCall(SelectorState& state,
         }
     }
 
+    // For llvm.memcpy intrinsic: drop the last argument (is_volatile, i1 type)
+    // llvm.memcpy has 4 args: (dst, src, size, is_volatile) but memcpy has 3: (dst, src, size)
+    if (isLLVMMemcpy && args.size() > 3) {
+        args.pop_back();
+    }
+
     // Push arguments right-to-left
     for (int i = static_cast<int>(args.size()) - 1; i >= 0; i--) {
         std::string argName = args[i];
+
+        // Determine if this is a vreg reference (starts with '%') or a constant/global
+        bool argIsVregRef = (!argName.empty() && argName[0] == '%');
+        // Use argName directly for vreg lookup (maps use full name with % prefix)
+        std::string vregLookupName = argName;
 
         // Check if argument is a global variable (starts with '.')
         bool isGlobal = (!argName.empty() && argName[0] == '.');
@@ -51,8 +68,13 @@ std::vector<LoweredInstruction> lowerCall(SelectorState& state,
             nasmName = "_" + nasmName.substr(1);
         }
 
-        // Check if argument is a vreg/parameter
-        bool argIsVreg = (state.vregToPhys.find(argName) != state.vregToPhys.end());
+        // Check if argument is a vreg/parameter (either register-allocated or stack-allocated)
+        // Only look up vreg maps if the argument has a % prefix (vreg reference)
+        bool argIsVreg = false;
+        if (argIsVregRef) {
+            argIsVreg = (state.vregToPhys.find(argName) != state.vregToPhys.end()) ||
+                         (state.vregToStackOffset.find(argName) != state.vregToStackOffset.end());
+        }
 
         // Check if argument is a constant (not a vreg)
         bool isConst = false;
@@ -120,45 +142,85 @@ std::vector<LoweredInstruction> lowerCall(SelectorState& state,
                 pushLow.mnemonic = "push";
                 pushLow.operands.push_back("ax");
                 lowered.instructions.push_back(pushLow);
-            } else {
-                std::string argReg = state.getPhysReg(argName);
-                if (argReg.find("bp") != std::string::npos) {
-                    // Memory operand - push both words
-                    // Compute high word offset properly
-                    std::string highAddr;
+              } else {
+                // Check if this argument is an alloca result (stack offset IS the address)
+                // Use argName (with % prefix) for consistent lookup with other codegen
+                bool argIsAlloca = state.allocaVregs.find(argName) != state.allocaVregs.end();
+                  if (argIsAlloca) {
+                    // Alloca result: the stack offset IS the pointer value
+                    // We need to compute bp + offset at runtime and push that as the address
+                    // Push high word = SS selector (for far pointer in OS/2 1.x segmented model)
+                    // Push low word = bp + offset (computed at runtime via lea)
+                    std::string argReg = state.getPhysReg(argName);
+                    int offset = 0;
                     if (argReg.find("bp") != std::string::npos) {
-                        int offset = 0;
                         std::string offsetStr = argReg.substr(2); // Remove "bp"
                         if (!offsetStr.empty()) {
                             try { offset = std::stoi(offsetStr); } catch (...) {}
                         }
-                        int newOffset = offset + 2;
-                        std::string offsetStr2 = (newOffset >= 0) ? ("+" + std::to_string(newOffset)) : std::to_string(newOffset);
-                        highAddr = "[" + std::string("bp") + offsetStr2 + "]";
-                    } else {
-                        highAddr = "[" + argReg + "+2]";
                     }
-
                     Instruction286 pushHigh;
                     pushHigh.mnemonic = "push";
-                    pushHigh.operands.push_back("word " + highAddr);
+                    pushHigh.operands.push_back("ss");
                     lowered.instructions.push_back(pushHigh);
+
+                    // Compute bp + offset: lea ax, [bp+offset]
+                    Instruction286 leaAx;
+                    leaAx.mnemonic = "lea";
+                    leaAx.operands.push_back("ax");
+                    if (offset < 0) {
+                        leaAx.operands.push_back("[" + std::string("bp") + std::to_string(offset) + "]");
+                    } else if (offset > 0) {
+                        leaAx.operands.push_back("[" + std::string("bp+") + std::to_string(offset) + "]");
+                    } else {
+                        leaAx.operands.push_back("[" + std::string("bp") + "]");
+                    }
+                    lowered.instructions.push_back(leaAx);
 
                     Instruction286 pushLow;
                     pushLow.mnemonic = "push";
-                    pushLow.operands.push_back("word [" + argReg + "]");
+                    pushLow.operands.push_back("ax");
                     lowered.instructions.push_back(pushLow);
                 } else {
-                    // Register operand - push DX (high), then register (low)
-                    Instruction286 pushHigh;
-                    pushHigh.mnemonic = "push";
-                    pushHigh.operands.push_back("dx");
-                    lowered.instructions.push_back(pushHigh);
+                    std::string argReg = state.getPhysReg(vregLookupName);
+                    if (argReg.find("bp") != std::string::npos) {
+                        // Memory operand (value stored at stack location) - push both words
+                        // Compute high word offset properly
+                        std::string highAddr;
+                        if (argReg.find("bp") != std::string::npos) {
+                            int offset = 0;
+                            std::string offsetStr = argReg.substr(2); // Remove "bp"
+                            if (!offsetStr.empty()) {
+                                try { offset = std::stoi(offsetStr); } catch (...) {}
+                            }
+                            int newOffset = offset + 2;
+                            std::string offsetStr2 = (newOffset >= 0) ? ("+" + std::to_string(newOffset)) : std::to_string(newOffset);
+                            highAddr = "[" + std::string("bp") + offsetStr2 + "]";
+                        } else {
+                            highAddr = "[" + argReg + "+2]";
+                        }
 
-                    Instruction286 pushLow;
-                    pushLow.mnemonic = "push";
-                    pushLow.operands.push_back(argReg);
-                    lowered.instructions.push_back(pushLow);
+                        Instruction286 pushHigh;
+                        pushHigh.mnemonic = "push";
+                        pushHigh.operands.push_back("word " + highAddr);
+                        lowered.instructions.push_back(pushHigh);
+
+                        Instruction286 pushLow;
+                        pushLow.mnemonic = "push";
+                        pushLow.operands.push_back("word [" + argReg + "]");
+                        lowered.instructions.push_back(pushLow);
+                    } else {
+                        // Register operand - push DX (high), then register (low)
+                        Instruction286 pushHigh;
+                        pushHigh.mnemonic = "push";
+                        pushHigh.operands.push_back("dx");
+                        lowered.instructions.push_back(pushHigh);
+
+                        Instruction286 pushLow;
+                        pushLow.mnemonic = "push";
+                        pushLow.operands.push_back(argReg);
+                        lowered.instructions.push_back(pushLow);
+                    }
                 }
             }
         } else {
@@ -182,7 +244,7 @@ std::vector<LoweredInstruction> lowerCall(SelectorState& state,
                 pushInst.operands.push_back("ax");
                 lowered.instructions.push_back(pushInst);
             } else {
-                std::string argReg = state.getPhysReg(argName);
+                std::string argReg = state.getPhysReg(vregLookupName);
                 if (argReg.find("bp") != std::string::npos) {
                     // Memory operand - load into AX first
                     Instruction286 loadInst;

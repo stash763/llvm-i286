@@ -50,7 +50,19 @@ std::vector<LoweredInstruction> lowerAdd(SelectorState& state,
             Instruction286 loadHigh;
             loadHigh.mnemonic = "mov";
             loadHigh.operands.push_back("bx");
-            loadHigh.operands.push_back("[" + op1Stack + "+2]");
+            // Calculate correct offset for high word
+            if (op1Stack.find("bp") != std::string::npos) {
+                int offset = 0;
+                std::string offsetStr = op1Stack.substr(2);
+                if (!offsetStr.empty()) {
+                    try { offset = std::stoi(offsetStr); } catch (...) {}
+                }
+                int newOffset = offset + 2;
+                std::string offsetStr2 = (newOffset >= 0) ? ("+" + std::to_string(newOffset)) : std::to_string(newOffset);
+                loadHigh.operands.push_back("[" + std::string("bp") + offsetStr2 + "]");
+            } else {
+                loadHigh.operands.push_back("[" + op1Stack + "+2]");
+            }
             lowered.instructions.push_back(loadHigh);
 
             // Load op2 low word to CX, high word to DX
@@ -77,7 +89,19 @@ std::vector<LoweredInstruction> lowerAdd(SelectorState& state,
                 loadOp2High.operands.push_back(std::to_string(highWord));
             } else {
                 loadOp2High.operands.push_back("dx");
-                loadOp2High.operands.push_back("[" + op2Stack + "+2]");
+                // Calculate correct offset for high word
+                if (op2Stack.find("bp") != std::string::npos) {
+                    int offset = 0;
+                    std::string offsetStr = op2Stack.substr(2);
+                    if (!offsetStr.empty()) {
+                        try { offset = std::stoi(offsetStr); } catch (...) {}
+                    }
+                    int newOffset = offset + 2;
+                    std::string offsetStr2 = (newOffset >= 0) ? ("+" + std::to_string(newOffset)) : std::to_string(newOffset);
+                    loadOp2High.operands.push_back("[" + std::string("bp") + offsetStr2 + "]");
+                } else {
+                    loadOp2High.operands.push_back("[" + op2Stack + "+2]");
+                }
             }
             lowered.instructions.push_back(loadOp2High);
 
@@ -101,6 +125,7 @@ std::vector<LoweredInstruction> lowerAdd(SelectorState& state,
                 // If result doesn't have stack space, allocate it
                 if (resultStack.find("bp") == std::string::npos) {
                     state.currentStackOffset -= 4;
+                    state.tempSpaceInBlock += 4;   // track temp space for cleanup
                     int stackOffset = state.currentStackOffset;
                     state.vregToStackOffset[irInst.resultName] = stackOffset;
                     resultStack = "bp" + std::to_string(stackOffset);
@@ -266,7 +291,19 @@ std::vector<LoweredInstruction> lowerSub(SelectorState& state,
             Instruction286 loadHigh;
             loadHigh.mnemonic = "mov";
             loadHigh.operands.push_back("bx");
-            loadHigh.operands.push_back("[" + op1Stack + "+2]");
+            // Calculate correct offset for high word
+            if (op1Stack.find("bp") != std::string::npos) {
+                int offset = 0;
+                std::string offsetStr = op1Stack.substr(2);
+                if (!offsetStr.empty()) {
+                    try { offset = std::stoi(offsetStr); } catch (...) {}
+                }
+                int newOffset = offset + 2;
+                std::string offsetStr2 = (newOffset >= 0) ? ("+" + std::to_string(newOffset)) : std::to_string(newOffset);
+                loadHigh.operands.push_back("[" + std::string("bp") + offsetStr2 + "]");
+            } else {
+                loadHigh.operands.push_back("[" + op1Stack + "+2]");
+            }
             lowered.instructions.push_back(loadHigh);
 
             // Load op2 low word to CX, high word to DX
@@ -293,7 +330,19 @@ std::vector<LoweredInstruction> lowerSub(SelectorState& state,
                 loadOp2High.operands.push_back(std::to_string(highWord));
             } else {
                 loadOp2High.operands.push_back("dx");
-                loadOp2High.operands.push_back("[" + op2Stack + "+2]");
+                // Calculate correct offset for high word
+                if (op2Stack.find("bp") != std::string::npos) {
+                    int offset = 0;
+                    std::string offsetStr = op2Stack.substr(2);
+                    if (!offsetStr.empty()) {
+                        try { offset = std::stoi(offsetStr); } catch (...) {}
+                    }
+                    int newOffset = offset + 2;
+                    std::string offsetStr2 = (newOffset >= 0) ? ("+" + std::to_string(newOffset)) : std::to_string(newOffset);
+                    loadOp2High.operands.push_back("[" + std::string("bp") + offsetStr2 + "]");
+                } else {
+                    loadOp2High.operands.push_back("[" + op2Stack + "+2]");
+                }
             }
             lowered.instructions.push_back(loadOp2High);
 
@@ -317,6 +366,7 @@ std::vector<LoweredInstruction> lowerSub(SelectorState& state,
                 // Allocate stack space if needed
                 if (resultStack.find("bp") == std::string::npos) {
                     state.currentStackOffset -= 4;
+                    state.tempSpaceInBlock += 4;   // track temp space for cleanup
                     int stackOffset = state.currentStackOffset;
                     state.vregToStackOffset[irInst.resultName] = stackOffset;
                     resultStack = "bp" + std::to_string(stackOffset);
@@ -439,6 +489,7 @@ std::vector<LoweredInstruction> lowerMul(SelectorState& state,
             std::string resultStack = state.getPhysReg(irInst.resultName);
             if (resultStack.find("bp") == std::string::npos) {
                 state.currentStackOffset -= 4;
+                state.tempSpaceInBlock += 4;   // track temp space for cleanup
                 int stackOffset = state.currentStackOffset;
                 state.vregToStackOffset[irInst.resultName] = stackOffset;
                 resultStack = "bp" + std::to_string(stackOffset);
@@ -493,7 +544,19 @@ std::vector<LoweredInstruction> lowerMul(SelectorState& state,
                 std::string offsetStr2 = (newOffset >= 0) ? ("+" + std::to_string(newOffset)) : std::to_string(newOffset);
                 loadOp2High.operands.push_back("[" + std::string("bp") + offsetStr2 + "]");
             } else {
-                loadOp2High.operands.push_back("[" + op2Stack + "+2]");
+                // Calculate correct offset for high word
+                if (op2Stack.find("bp") != std::string::npos) {
+                    int offset = 0;
+                    std::string offsetStr = op2Stack.substr(2);
+                    if (!offsetStr.empty()) {
+                        try { offset = std::stoi(offsetStr); } catch (...) {}
+                    }
+                    int newOffset = offset + 2;
+                    std::string offsetStr2 = (newOffset >= 0) ? ("+" + std::to_string(newOffset)) : std::to_string(newOffset);
+                    loadOp2High.operands.push_back("[" + std::string("bp") + offsetStr2 + "]");
+                } else {
+                    loadOp2High.operands.push_back("[" + op2Stack + "+2]");
+                }
             }
             lowered.instructions.push_back(loadOp2High);
 

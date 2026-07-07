@@ -116,6 +116,7 @@ std::string ensure32BitStackSlot(SelectorState& state,
     std::string resultStack = state.getPhysReg(vregName);
     if (resultStack.find("bp") == std::string::npos) {
         state.currentStackOffset -= 4;
+        state.tempSpaceInBlock += 4;   // track temp space for cleanup
         int stackOffset = state.currentStackOffset;
         state.vregToStackOffset[vregName] = stackOffset;
         resultStack = "bp" + std::to_string(stackOffset);

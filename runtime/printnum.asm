@@ -2,12 +2,13 @@
 ; Based on the itoa + DosWrite pattern from os2_examples/asm_libtest/test.asm
 ;
 ; Stack parameters (pushed right-to-left by caller, near call):
-;   [bp+4]  = buffer offset (ds-relative)
-;   [bp+6]  = buffer size low word (ignored, we use 12)
-;   [bp+8]  = buffer size high word (ignored)
-;   [bp+10] = value low word (LSB)
-;   [bp+12] = value high word (MSB)
-; Caller cleans up: add sp, 10
+;   [bp+4]  = buffer offset low word (32-bit pointer, near offset)
+;   [bp+6]  = buffer offset high word (32-bit pointer, usually 0)
+;   [bp+8]  = buffer size low word (ignored, we use 12)
+;   [bp+10] = buffer size high word (ignored)
+;   [bp+12] = value low word (LSB)
+;   [bp+14] = value high word (MSB)
+; Caller cleans up: add sp, 12
 
 BITS 16
 
@@ -26,9 +27,9 @@ printnum:
     push di
 
     ; Get parameters from stack
-    mov di, [bp+4]      ; buffer offset
-    mov ax, [bp+10]     ; value low word (LSB)
-    mov dx, [bp+12]     ; value high word (MSB)
+    mov di, [bp+4]      ; buffer offset (low word of 32-bit pointer)
+    mov ax, [bp+12]     ; value low word (LSB)
+    mov dx, [bp+14]     ; value high word (MSB)
 
     ; Call itoa to convert value to ASCII string
     ; itoa parameters (pushed right-to-left):

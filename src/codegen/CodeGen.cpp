@@ -34,8 +34,8 @@ std::string CodeGen::generate(const ir::Module& module) {
                 if (param->type->isInteger()) {
                     paramWidths.push_back(param->type->bitWidth);
                 } else if (param->type->isPointer()) {
-                    // Pointers are 16-bit in our model
-                    paramWidths.push_back(16);
+                    // Pointers are 32-bit (i386 target)
+                    paramWidths.push_back(32);
                 } else {
                     paramWidths.push_back(0);
                 }
@@ -49,17 +49,14 @@ std::string CodeGen::generate(const ir::Module& module) {
     
     std::string allFunctions;
     
-    // Determine entry function name: "main" if it exists, otherwise first non-declaration function
+    // Determine entry function name: only "main" gets a start entry point.
+    // Helper/library modules (without main) should not emit a start label,
+    // so they can be linked alongside a main module.
     std::string entryFuncName;
     for (const auto& func : module.functions) {
-        if (!func->isDeclaration) {
-            if (func->name == "main") {
-                entryFuncName = "main";
-                break;
-            }
-            if (entryFuncName.empty()) {
-                entryFuncName = func->name;
-            }
+        if (!func->isDeclaration && func->name == "main") {
+            entryFuncName = "main";
+            break;
         }
     }
     
@@ -69,6 +66,10 @@ std::string CodeGen::generate(const ir::Module& module) {
         if (func->isDeclaration) {
             // printf is not available in the runtime library
             if (func->name == "printf") {
+                continue;
+            }
+            // LLVM intrinsics are lowered to runtime calls, not extern
+            if (func->name.find("llvm.memcpy") != std::string::npos) {
                 continue;
             }
             externFuncs.push_back(func->name);

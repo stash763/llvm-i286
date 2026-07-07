@@ -158,22 +158,12 @@ std::string Emitter::emitModule(const std::string& moduleName,
         output += "\t\tpush    0               \t; action code 0 = terminate\n";
         output += "       call\tfar DOSEXIT\n";
         output += "\n";
+        
+        // User functions
+        output += codeSegment;
     } else {
-        // No entry function: emit code directly at ..start:
-        output += "..start:\n";
-        output += "                ;  Program entry point\n";
-        output += "                \n";
-    }
-    
-    // User functions
-    output += codeSegment;
-    
-    if (entryFuncName.empty()) {
-        // No entry function: exit code after user code
-        output += "exit:\n";
-        output += "\t\tpush    ax              \t; return code\n";
-        output += "\t\tpush    0               \t; action code 0 = terminate\n";
-        output += "       call\tfar DOSEXIT\n";
+        // Helper/library module: emit code only, no start/exit labels
+        output += codeSegment;
     }
     
     // End segments

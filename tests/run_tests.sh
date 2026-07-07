@@ -57,6 +57,11 @@ echo ""
 # Create output directory
 mkdir -p "$OUTPUT_DIR"
 
+# Companion source files to link alongside the main test file
+# Key = test name, Value = path to additional .c file(s) to link
+declare -A COMPANION_FILES
+# COMPANION_FILES[test_memcpy]="$TEST_DIR/test_memcpy_memcpy.c"
+
 # Expected stdout output for each test
 declare -A EXPECTED_OUTPUT
 EXPECTED_OUTPUT[hello]="0"
@@ -70,6 +75,7 @@ EXPECTED_OUTPUT[test_mul32_simple]="32"
 EXPECTED_OUTPUT[test_mul_local]="20000"
 EXPECTED_OUTPUT[test_mul_print]="32"
 EXPECTED_OUTPUT[test_printnum]="42"
+EXPECTED_OUTPUT[test_memcpy]="0"
 
 # Tests that use unsupported features (expected to fail at compile or link time)
 declare -A EXPECTED_FAILURES
@@ -90,9 +96,21 @@ run_test() {
 
     local exe_file="$OUTPUT_DIR/${test_name}.exe"
 
-    # Step 1: Compile via clang_i286
+    # Step 1: Compile via clang_i286 (with optional companion files)
+    local compile_cmd=("$CLANG_I286")
+
+    # Add companion file if one exists for this test
+    local companion="${COMPANION_FILES[$test_name]:-}"
+    if [ -n "$companion" ] && [ -f "$companion" ]; then
+        compile_cmd+=("$test_file" "$companion")
+    else
+        compile_cmd+=("$test_file")
+    fi
+
+    compile_cmd+=(-o "$exe_file")
+
     local compile_log
-    compile_log=$("$CLANG_I286" "$test_file" -o "$exe_file" 2>&1)
+    compile_log=$("${compile_cmd[@]}" 2>&1)
     local compile_rc=$?
 
     if [ $compile_rc -ne 0 ]; then

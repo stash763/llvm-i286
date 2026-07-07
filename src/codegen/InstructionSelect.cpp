@@ -186,23 +186,49 @@ std::vector<LoweredInstruction> InstructionSelector::lowerInstruction(const ir::
     return loweredVec;
 }
 
-std::vector<LoweredInstruction> InstructionSelector::lowerBasicBlock(const ir::BasicBlock& bb) {
+  std::vector<LoweredInstruction> InstructionSelector::lowerBasicBlock(const ir::BasicBlock& bb) {
     std::vector<LoweredInstruction> lowered;
     
-    // Emit basic block label if present (prefix with bb_ to avoid conflicts with reserved labels)
+    // Emit basic block label if present
+    // Scope the label with a prefix from the current function name to avoid collisions across functions
     if (!bb.label.empty()) {
         LoweredInstruction labelInst;
-        labelInst.label = "bb_" + bb.label;
+        std::string funcPrefix = "";
+        if (impl->currentFunc && !impl->currentFunc->name.empty()) {
+            funcPrefix = impl->currentFunc->name + "_";
+        }
+        labelInst.label = funcPrefix + "bb_" + bb.label;
         lowered.push_back(labelInst);
     }
     
-    // Lower each instruction
+    // Lower each non-terminator instruction
     for (const auto& inst : bb.instructions) {
         auto instLowered = lowerInstruction(*inst);
         lowered.insert(lowered.end(), instLowered.begin(), instLowered.end());
     }
     
-    // Lower terminator
+    // Before lowering terminator, capture allocaEndOffset for epilogue cleanup.
+    // allocaEndOffset should represent only alloca space (no temp space).
+    // currentStackOffset includes both alloca and temp space allocations;
+    // add tempSpaceInBlock back to get the alloca-only offset.
+    impl->allocaEndOffset = impl->currentStackOffset + impl->tempSpaceInBlock;
+    
+    // Free temp space allocated in this basic block BEFORE terminator
+    if (impl->tempSpaceInBlock > 0) {
+        // Adjust currentStackOffset to remove temp space from tracking
+        impl->currentStackOffset += impl->tempSpaceInBlock;
+        
+        Instruction286 addSp;
+        addSp.mnemonic = "add";
+        addSp.operands.push_back("sp");
+        addSp.operands.push_back(std::to_string(impl->tempSpaceInBlock));
+        LoweredInstruction cleanup;
+        cleanup.instructions.push_back(addSp);
+        lowered.push_back(cleanup);
+        impl->tempSpaceInBlock = 0;
+    }
+    
+    // Lower terminator (uses allocaEndOffset for epilogue)
     if (bb.terminator) {
         auto termLowered = lowerInstruction(*bb.terminator);
         lowered.insert(lowered.end(), termLowered.begin(), termLowered.end());
@@ -216,8 +242,10 @@ std::vector<LoweredInstruction> InstructionSelector::lowerBasicBlock(const ir::B
     impl->vregToPhys.clear();
     impl->physToVreg.clear();  // Also clear the reverse mapping
     impl->vregToStackOffset.clear();
+    impl->allocaVregs.clear();
     impl->currentStackOffset = -6;  // Account for 3 saved regs: bx, si, di (2 bytes each)
-    impl->labelCounter = 0;
+    impl->tempSpaceInBlock = 0;
+    // Note: labelCounter is NOT reset per function to ensure unique labels across functions
     
     std::vector<LoweredInstruction> lowered;
     
@@ -342,6 +370,16 @@ std::vector<LoweredInstruction> InstructionSelector::lowerBasicBlock(const ir::B
             impl->physToVreg[stackReg] = param->name;
             impl->mark32Bit(param->name);
         } else {
+            // For 16-bit parameters, load from stack to register
+            LoweredInstruction loadInstr;
+            Instruction286 loadReg;
+            loadReg.mnemonic = "mov";
+            loadReg.operands.push_back(physReg);
+            std::string paramLoc = "[bp+" + std::to_string(stackOffset) + "]";
+            loadReg.operands.push_back(paramLoc);
+            loadInstr.instructions.push_back(loadReg);
+            lowered.push_back(loadInstr);
+            
             impl->vregToPhys[param->name] = physReg;
             impl->physToVreg[physReg] = param->name;
         }
@@ -354,6 +392,7 @@ std::vector<LoweredInstruction> InstructionSelector::lowerBasicBlock(const ir::B
     for (const auto& bb : func.basicBlocks) {
         auto bbLowered = lowerBasicBlock(*bb);
         lowered.insert(lowered.end(), bbLowered.begin(), bbLowered.end());
+        // allocaEndOffset is now captured in lowerBasicBlock before the terminator
     }
     
     return lowered;

@@ -48,6 +48,12 @@ struct SelectorState {
     // Current stack offset (grows negative from BP)
     int currentStackOffset = 0;
 
+    // Temp space allocated in current basic block (freed at end of block)
+    int tempSpaceInBlock = 0;
+
+    // Stack offset after all allocas (used to compute alloca-only cleanup)
+    int allocaEndOffset = 0;
+
     // Available temp registers (in priority order)
     std::vector<std::string> tempRegs = {"ax", "cx", "dx"};
 
