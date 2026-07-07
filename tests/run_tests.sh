@@ -76,6 +76,7 @@ EXPECTED_OUTPUT[test_mul_local]="20000"
 EXPECTED_OUTPUT[test_mul_print]="32"
 EXPECTED_OUTPUT[test_printnum]="42"
 EXPECTED_OUTPUT[test_memcpy]="0"
+EXPECTED_OUTPUT[test_ptrtoint]="42"
 
 # Tests that use unsupported features (expected to fail at compile or link time)
 declare -A EXPECTED_FAILURES
@@ -131,17 +132,10 @@ run_test() {
         # Still try to run it
     fi
 
-    # Step 2: Run under lx_loader in podman container
+    # Step 2: Run under lx_loader directly (must run from build dir to find lib2ine.so, etc.)
     local output
-    output=$(podman run --rm \
-        -v "$OUTPUT_DIR:/tests:ro" \
-        -v "$LX_LOADER:/lx_loader:ro" \
-        -v "$LIB2INE:/usr/lib32/lib2ine.so:ro" \
-        -v "$LIBDOSCALLS:/tests/libdoscalls.so:ro" \
-        -w /tests \
-        "$CONTAINER" \
-        bash -c 'export LD_LIBRARY_PATH=/usr/lib32; /lx_loader /tests/'"$test_name"'.exe 2>/dev/null' \
-        2>/dev/null) || true
+    output=$(cd "$(dirname "$LX_LOADER")" && LD_LIBRARY_PATH=. \
+        ./lx_loader "$exe_file" 2>/dev/null) || true
 
     # Step 3: Compare output against expected value
     local expected="${EXPECTED_OUTPUT[$test_name]}"

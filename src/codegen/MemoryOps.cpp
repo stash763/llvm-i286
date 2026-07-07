@@ -87,6 +87,9 @@ std::vector<LoweredInstruction> lowerStore(SelectorState& state,
                 isConst = true;
             } catch (...) {}
         }
+        
+        // Check if value is a global variable reference (starts with @)
+        bool isGlobal = (!valName.empty() && valName[0] == '@');
 
         if (is32) {
             // 32-bit store: store both low and high words
@@ -98,6 +101,22 @@ std::vector<LoweredInstruction> lowerStore(SelectorState& state,
                 movConst.operands.push_back(valName);
                 lowered.instructions.push_back(movConst);
                 // High word is 0 for constants
+                Instruction286 xorDx;
+                xorDx.mnemonic = "xor";
+                xorDx.operands.push_back("dx");
+                xorDx.operands.push_back("dx");
+                lowered.instructions.push_back(xorDx);
+            } else if (isGlobal) {
+                // Global variable: load its address
+                // The global name starts with @, remove it for NASM
+                std::string globalName = valName.substr(1); // Remove @ prefix
+                // For 16-bit protected mode with flat memory model
+                Instruction286 movAx;
+                movAx.mnemonic = "mov";
+                movAx.operands.push_back("ax");
+                movAx.operands.push_back(globalName);
+                lowered.instructions.push_back(movAx);
+                // High word (segment) is DGROUP selector, but for flat model we can use 0
                 Instruction286 xorDx;
                 xorDx.mnemonic = "xor";
                 xorDx.operands.push_back("dx");

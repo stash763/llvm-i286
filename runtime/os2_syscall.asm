@@ -171,7 +171,7 @@ __os2_syscall3:
     mov ax, word [bp+16]  ; return count (low word) as result
     cwd                   ; sign-extend to DX:AX
     pop bp
-    ret 12                ; cleanup 3 args from caller
+    ret                   ; caller cleanup
 
 .syscall_read:
     ; read(fd, buf, count) -> DosRead(hf, buf, count, &bytesRead)
@@ -192,7 +192,7 @@ __os2_syscall3:
     ; Return value in AX = bytes read
     cwd
     pop bp
-    ret 12            ; cleanup 3 args
+    ret             ; caller cleanup
 
 ; ========================================================================
 ; __os2_syscall4(long n, long a1, long a2, long a3, long a4)

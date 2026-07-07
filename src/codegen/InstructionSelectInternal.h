@@ -387,6 +387,10 @@ std::vector<LoweredInstruction> lowerExtractValue(SelectorState& state,
     const ir::Instruction& irInst, const std::string& resultReg);
 std::vector<LoweredInstruction> lowerInsertValue(SelectorState& state,
     const ir::Instruction& irInst, const std::string& resultReg);
+std::vector<LoweredInstruction> lowerPtrToInt(SelectorState& state,
+    const ir::Instruction& irInst, const std::string& resultReg);
+std::vector<LoweredInstruction> lowerIntToPtr(SelectorState& state,
+    const ir::Instruction& irInst, const std::string& resultReg);
 
 // FPU operations
 std::vector<LoweredInstruction> lowerFpuArith(SelectorState& state,

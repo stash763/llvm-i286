@@ -163,9 +163,13 @@ std::vector<LoweredInstruction> InstructionSelector::lowerInstruction(const ir::
             return lowerUnreachable(*impl, irInst, resultReg);
         
         case ir::Opcode::BitCast:
-        case ir::Opcode::PtrToInt:
-        case ir::Opcode::IntToPtr:
             return lowerBitCast(*impl, irInst, resultReg);
+        
+        case ir::Opcode::PtrToInt:
+            return lowerPtrToInt(*impl, irInst, resultReg);
+        
+        case ir::Opcode::IntToPtr:
+            return lowerIntToPtr(*impl, irInst, resultReg);
         
         case ir::Opcode::ExtractValue:
             return lowerExtractValue(*impl, irInst, resultReg);

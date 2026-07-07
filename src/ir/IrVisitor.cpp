@@ -757,8 +757,24 @@ std::unique_ptr<Instruction> IrVisitor::parseInstruction(LLVMIRParser::ValueInst
         }
     }
     else if (ctx->bitCastInst()) inst->opcode = Opcode::BitCast;
-    else if (ctx->intToPtrInst()) inst->opcode = Opcode::IntToPtr;
-    else if (ctx->ptrToIntInst()) inst->opcode = Opcode::PtrToInt;
+    else if (ctx->intToPtrInst()) {
+        inst->opcode = Opcode::IntToPtr;
+        auto *intToPtrCtx = ctx->intToPtrInst();
+        if (intToPtrCtx->typeValue()) {
+            Operand op;
+            op.name = intToPtrCtx->typeValue()->value()->getText();
+            inst->operands.push_back(std::move(op));
+        }
+    }
+    else if (ctx->ptrToIntInst()) {
+        inst->opcode = Opcode::PtrToInt;
+        auto *ptrToIntCtx = ctx->ptrToIntInst();
+        if (ptrToIntCtx->typeValue()) {
+            Operand op;
+            op.name = ptrToIntCtx->typeValue()->value()->getText();
+            inst->operands.push_back(std::move(op));
+        }
+    }
     else if (ctx->phiInst()) inst->opcode = Opcode::Phi;
              else if (ctx->selectInst()) {
         inst->opcode = Opcode::Select;

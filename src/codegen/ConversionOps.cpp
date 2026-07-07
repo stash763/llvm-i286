@@ -355,5 +355,183 @@ std::vector<LoweredInstruction> lowerInsertValue(SelectorState& state,
     return loweredVec;
 }
 
+std::vector<LoweredInstruction> lowerPtrToInt(SelectorState& state,
+    const ir::Instruction& irInst, const std::string& resultReg) {
+    // PtrToInt: result = ptrtoint ptr value to i32
+    // On i286 protected mode, pointers are 32-bit (selector:offset)
+    // For flat memory model, selector = 0, so we just need the offset
+    std::vector<LoweredInstruction> loweredVec;
+    LoweredInstruction lowered;
+
+    if (!irInst.operands.empty()) {
+        std::string ptrReg = state.getPhysReg(irInst.operands[0].name);
+        std::string resultRegName = irInst.resultName;
+
+        // Load the pointer value (32-bit) into AX:DX
+        // If the pointer is in memory, load both words
+        if (ptrReg.find("bp") != std::string::npos) {
+            // Memory operand: load low word to AX, high word to DX
+            // ptrReg is like "bp-18", need to generate "[bp-18]" and "[bp-16]"
+            Instruction286 loadLow;
+            loadLow.mnemonic = "mov";
+            loadLow.operands.push_back("ax");
+            loadLow.operands.push_back("[" + ptrReg + "]");
+            lowered.instructions.push_back(loadLow);
+
+            // Compute high word offset: parse the offset and add 2
+            int offset = 0;
+            std::string offsetStr = ptrReg.substr(2); // Remove "bp"
+            if (!offsetStr.empty()) {
+                try { offset = std::stoi(offsetStr); } catch (...) {}
+            }
+            int highOffset = offset + 2;
+            std::string highOffsetStr = (highOffset >= 0) ? ("bp+" + std::to_string(highOffset)) : ("bp" + std::to_string(highOffset));
+
+            Instruction286 loadHigh;
+            loadHigh.mnemonic = "mov";
+            loadHigh.operands.push_back("dx");
+            loadHigh.operands.push_back("[" + highOffsetStr + "]");
+            lowered.instructions.push_back(loadHigh);
+        } else if (ptrReg != "ax") {
+            // Register operand: move to AX
+            Instruction286 movAx;
+            movAx.mnemonic = "mov";
+            movAx.operands.push_back("ax");
+            movAx.operands.push_back(ptrReg);
+            lowered.instructions.push_back(movAx);
+            // High word should be 0 for flat model
+            Instruction286 xorDx;
+            xorDx.mnemonic = "xor";
+            xorDx.operands.push_back("dx");
+            xorDx.operands.push_back("dx");
+            lowered.instructions.push_back(xorDx);
+        }
+
+        // Store result in memory (32-bit value in AX:DX)
+        // Allocate space on stack for the result using proper stack offset tracking
+        state.currentStackOffset -= 4;  // 32-bit = 4 bytes
+        int stackOffset = state.currentStackOffset;
+        
+        // Emit stack allocation
+        Instruction286 subSp;
+        subSp.mnemonic = "sub";
+        subSp.operands.push_back("sp");
+        subSp.operands.push_back("4");
+        lowered.instructions.push_back(subSp);
+
+        // Compute offsets: low word at stackOffset, high word at stackOffset+2
+        std::string lowOffsetStr = (stackOffset >= 0) ? ("bp+" + std::to_string(stackOffset)) : ("bp" + std::to_string(stackOffset));
+        int highOffset = stackOffset + 2;
+        std::string highOffsetStr = (highOffset >= 0) ? ("bp+" + std::to_string(highOffset)) : ("bp" + std::to_string(highOffset));
+
+        // Store low word
+        Instruction286 storeLow;
+        storeLow.mnemonic = "mov";
+        storeLow.operands.push_back("[" + lowOffsetStr + "]");
+        storeLow.operands.push_back("ax");
+        lowered.instructions.push_back(storeLow);
+
+        // Store high word
+        Instruction286 storeHigh;
+        storeHigh.mnemonic = "mov";
+        storeHigh.operands.push_back("[" + highOffsetStr + "]");
+        storeHigh.operands.push_back("dx");
+        lowered.instructions.push_back(storeHigh);
+
+        // Update state: the result is at stackOffset (low word address)
+        state.vregToStackOffset[resultRegName] = stackOffset;
+        std::string resultStack = lowOffsetStr;
+        state.vregToPhys[resultRegName] = resultStack;
+        state.physToVreg[resultStack] = resultRegName;
+    }
+
+    loweredVec.push_back(lowered);
+    return loweredVec;
+}
+
+std::vector<LoweredInstruction> lowerIntToPtr(SelectorState& state,
+    const ir::Instruction& irInst, const std::string& resultReg) {
+    // IntToPtr: result = inttoptr i32 value to ptr
+    // On i286 protected mode, pointers are 32-bit (selector:offset)
+    // For flat memory model, selector = 0, so we just need the offset
+    std::vector<LoweredInstruction> loweredVec;
+    LoweredInstruction lowered;
+
+    if (!irInst.operands.empty()) {
+        std::string intReg = state.getPhysReg(irInst.operands[0].name);
+        std::string resultRegName = irInst.resultName;
+
+        // Load the integer value (32-bit) into AX:DX
+        // If the integer is in memory, load both words
+        if (intReg.find("bp") != std::string::npos && intReg[0] != '[') {
+            // Memory operand: load low word to AX, high word to DX
+            Instruction286 loadLow;
+            loadLow.mnemonic = "mov";
+            loadLow.operands.push_back("ax");
+            loadLow.operands.push_back("[" + intReg + "]");
+            lowered.instructions.push_back(loadLow);
+
+            Instruction286 loadHigh;
+            loadHigh.mnemonic = "mov";
+            loadHigh.operands.push_back("dx");
+            loadHigh.operands.push_back("[" + intReg + "+2]");
+            lowered.instructions.push_back(loadHigh);
+        } else if (intReg != "ax") {
+            // Register operand: move to AX
+            Instruction286 movAx;
+            movAx.mnemonic = "mov";
+            movAx.operands.push_back("ax");
+            movAx.operands.push_back(intReg);
+            lowered.instructions.push_back(movAx);
+            // High word should be 0 for flat model
+            Instruction286 xorDx;
+            xorDx.mnemonic = "xor";
+            xorDx.operands.push_back("dx");
+            xorDx.operands.push_back("dx");
+            lowered.instructions.push_back(xorDx);
+        }
+
+        // Store result in memory (32-bit value in AX:DX)
+        // Allocate space on stack for the result using proper stack offset tracking
+        state.currentStackOffset -= 4;  // 32-bit = 4 bytes
+        int stackOffset = state.currentStackOffset;
+        
+        // Emit stack allocation
+        Instruction286 subSp;
+        subSp.mnemonic = "sub";
+        subSp.operands.push_back("sp");
+        subSp.operands.push_back("4");
+        lowered.instructions.push_back(subSp);
+
+        // Compute offsets: low word at stackOffset, high word at stackOffset+2
+        std::string lowOffsetStr = (stackOffset >= 0) ? ("bp+" + std::to_string(stackOffset)) : ("bp" + std::to_string(stackOffset));
+        int highOffset = stackOffset + 2;
+        std::string highOffsetStr = (highOffset >= 0) ? ("bp+" + std::to_string(highOffset)) : ("bp" + std::to_string(highOffset));
+
+        // Store low word
+        Instruction286 storeLow;
+        storeLow.mnemonic = "mov";
+        storeLow.operands.push_back("[" + lowOffsetStr + "]");
+        storeLow.operands.push_back("ax");
+        lowered.instructions.push_back(storeLow);
+
+        // Store high word
+        Instruction286 storeHigh;
+        storeHigh.mnemonic = "mov";
+        storeHigh.operands.push_back("[" + highOffsetStr + "]");
+        storeHigh.operands.push_back("dx");
+        lowered.instructions.push_back(storeHigh);
+
+        // Update state: the result is at stackOffset (low word address)
+        state.vregToStackOffset[resultRegName] = stackOffset;
+        std::string resultStack = lowOffsetStr;
+        state.vregToPhys[resultRegName] = resultStack;
+        state.physToVreg[resultStack] = resultRegName;
+    }
+
+    loweredVec.push_back(lowered);
+    return loweredVec;
+}
+
 } // namespace codegen
 } // namespace llvm_i286
