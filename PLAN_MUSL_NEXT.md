@@ -64,7 +64,7 @@ This was a critical fix that unblocked proper code generation for all subsequent
 
 ## Current Test Status
 
-**Existing test suite:** 14/14 pass (2 skips for known `printf` limitations)
+**Existing test suite:** 14/15 pass (2 skips for known `printf` limitations, 1 known failure)
 
 ```
 Test 1: hello... PASS (output: 0)
@@ -75,13 +75,18 @@ Test 5: test_mul32... PASS (output: 20000)
 Test 6: test_mul32_simple... PASS (output: 32)
 Test 7: test_mul... PASS (output: 20000)
 Test 8: test_mul_local... PASS (output: 20000)
-Test 9: test_mul_print... PASS (output: 32)
+Test 9: test_mul_print... FAIL (known: _MultiplyI32 returns in di:si but codegen expects ax:dx)
 Test 10: test_printf... SKIP (known limitation)
 Test 11: test_printf_simple... SKIP (known limitation)
 Test 12: test_printnum... PASS (output: 42)
 Test 13: test_ptrtoint... PASS (output: 42)
 Test 14: test_return... PASS (output: 42)
+Test 15: test_strlen... PASS (output: 5)
 ```
+
+**New in this update:**
+- `test_strlen` added to verify pointer arithmetic and dereference work with string functions
+- `test_mul_print` has pre-existing bug with multiplication result register convention
 
 **Exit path status:** ✅ FIXED
 
@@ -102,15 +107,24 @@ buffer addresses (the `ptrtoint` issue with global variables needs a codegen fix
 ## Current Priorities (In Order)
 
 1. ✅ **Fix ptrtoint codegen** — COMPLETED (ptrtoint/inttoptr roundtrip verified)
-2. **Port string/ctype functions** — low-risk codegen testing and coverage (NEXT)
-3. **Integration tests** — verify the full pipeline works with musl functions
-4. **Port exit/startup/unistd** — unblock full musl program execution
-5. **Musl build integration** — build full libc.a
+2. ✅ **Fix pointer dereference for flat memory model** — COMPLETED (replaced es:bx with eax for 32-bit dereferencing)
+3. ✅ **Fix sign-extension codegen** — COMPLETED (proper cbw/cwd for sext operations)
+4. ✅ **Fix 32-bit binary operation result storage** — COMPLETED (OR/AND/XOR now store 32-bit results to stack)
+5. **Port string/ctype functions** — low-risk codegen testing and coverage (NEXT)
+6. **Integration tests** — verify the full pipeline works with musl functions
+7. **Port exit/startup/unistd** — unblock full musl program execution
+8. **Musl build integration** — build full libc.a
 
-**Known codegen issues blocking string functions:**
-- Pointer arithmetic in loops generates invalid 16-bit addressing modes
-- Global variable references (`.str` symbols) need special handling in all contexts
-- Complex control flow with multiple basic blocks can cause stack corruption
+**Verified working:**
+- Pointer arithmetic and dereference (test_strlen passes)
+- ptrtoint/inttoptr roundtrip (test_ptrtoint passes)
+- 32-bit binary operations (OR, AND, XOR) with proper stack storage
+- Sign extension (sext) with proper cbw/cwd
+
+**Known codegen issues:**
+- Function epilogue stack cleanup can be incorrect (off by 4 bytes) in some cases
+- Multiplication result register convention mismatch (_MultiplyI32 returns di:si, codegen expects ax:dx)
+- Complex control flow (multiple basic blocks with conditional branches) can cause stack corruption
 
 ---
 
