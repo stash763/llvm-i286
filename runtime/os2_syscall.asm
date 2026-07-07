@@ -91,6 +91,9 @@ __os2_syscall2:
     ; Load syscall number
     mov ax, [bp+4]
     
+    cmp ax, 6         ; __NR_exit / __NR_exit_group
+    je .syscall_exit_2
+    
     cmp ax, 4         ; __NR_close
     je .syscall_close
     
@@ -98,6 +101,15 @@ __os2_syscall2:
     je .syscall_getpid
     
     jmp return_enosys
+
+.syscall_exit_2:
+    ; _Exit(exit_code) - exit with provided code
+    ; a1 is at [bp+8], low word
+    mov ax, [bp+8]    ; exit code (low word)
+    
+    push 0            ; action = 0 (terminate process)
+    push ax           ; return code
+    call far DOSEXIT
 
 .syscall_close:
     ; close(fd) - DosClose(hf)

@@ -120,8 +120,9 @@ while [ $# -gt 0 ]; do
             shift
             ;;
 
-        # Architecture/tuning flags - consume (we only target i286)
+        # Architecture/tuning flags - we force -m32 for 32-bit code generation
         -m32|-m16|-m64)
+            # Already added default -m32 below, skip
             shift
             ;;
         -march=*|-mcpu=*|-mtune=*)
@@ -235,7 +236,8 @@ for INPUT in "${INPUT_FILES[@]}"; do
             ;;
         *)
             vmsg "clang: $INPUT -> $LLVM_IR"
-            if ! $CLANG_BIN -S -emit-llvm "${CLANG_ARGS[@]}" -o "$LLVM_IR" "$INPUT" 2>&1; then
+            # Always compile as 32-bit for i286 target (i386 target)
+            if ! $CLANG_BIN -S -emit-llvm -m32 "${CLANG_ARGS[@]}" -o "$LLVM_IR" "$INPUT" 2>&1; then
                 die "clang failed for '$INPUT'"
             fi
             ;;

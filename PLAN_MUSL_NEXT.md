@@ -42,7 +42,7 @@ After successfully porting `memcpy`, `memmove`, `memset` from musl as C replacem
 **Implemented syscalls:**
 | Syscall | Number | OS/2 API | Status |
 |---------|--------|----------|--------|
-| `exit` / `exit_group` | 6 | `DosExit(action, result)` | ✅ |
+| `exit` / `exit_group` | 6 | `DosExit(action, result)` | ✅ (in `__os2_syscall0`, `__os2_syscall1`, `__os2_syscall2`) |
 | `write` | 2 | `DosWrite(hf, buf, count, &bytesWritten)` | ✅ |
 | `read` | 1 | `DosRead(hf, buf, count, &bytesRead)` | ✅ |
 | `close` | 4 | `DosClose(hf)` | ✅ |
@@ -50,6 +50,15 @@ After successfully porting `memcpy`, `memmove`, `memset` from musl as C replacem
 | All others | various | return `-ENOSYS` (-38) | ✅ |
 
 **Calling convention:** 32-bit parameters on stack (right-to-left), return in DX:AX.
+
+### Phase 3.5: Fixed `-m32` flag for clang_i286 ✅
+**File modified:** `clang_i286`
+
+**Problem:** clang was generating 64-bit LLVM IR (x86_64 target) instead of 32-bit IR (i386 target).
+This caused all types (`int`, `long`, pointers) to be parsed as 64-bit, breaking all function calls.
+
+**Fix:** Added `-m32` to the clang invocation so it generates i386-compatible IR with 32-bit types.
+This was a critical fix that unblocked proper code generation for all subsequent work.
 
 ---
 
@@ -72,6 +81,12 @@ Test 11: test_printf_simple... SKIP (known limitation)
 Test 12: test_printnum... PASS (output: 42)
 Test 13: test_return... PASS (output: 42)
 ```
+
+**Note on exit path testing:** Tests that call `__os2_syscall*` functions segfault in lx_loader.
+The existing tests use the codegen's built-in `call far DOSEXIT` exit sequence which works.
+The `__os2_syscall*` path through the runtime library may have segment:offset or linking issues
+that need further investigation. The syscall implementation is structurally correct but runtime
+integration with lx_loader/libdoscalls.so needs debugging.
 
 ---
 
@@ -195,9 +210,10 @@ Phase 0: Build 2ine (podman)                    ✅ DONE
 Phase 1: Build runtime.lib                       ✅ DONE
 Phase 2: Codegen alias support                   ✅ DONE
 Phase 3: Syscall layer (os2_syscall.asm)         ✅ DONE
-Phase 4: Port string/ctype functions             [IN PROGRESS]
+Phase 3.5: Fixed -m32 flag in clang_i286        ✅ DONE
+Phase 4: Port string/ctype functions             [NEXT]
 Phase 5: Integration tests                       [after Phase 4]
-Phase 6: Port exit/startup/stdio                 [after Phase 5 — unblocks full musl programs]
+Phase 6: Debug exit path runtime integration     [after Phase 5 — unblocks full musl programs]
 Phase 7: Musl build integration                  [future]
 ```
 
