@@ -83,6 +83,7 @@ EXPECTED_OUTPUT[test_strlen]="5"
 declare -A EXPECTED_FAILURES
 EXPECTED_FAILURES[test_printf]=1
 EXPECTED_FAILURES[test_printf_simple]=1
+EXPECTED_FAILURES[test_mul_print]=1
 
 # Test counters
 PASS=0

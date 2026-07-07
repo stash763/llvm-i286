@@ -76,10 +76,41 @@ static std::vector<LoweredInstruction> lowerBinaryOp(
         inst.operands.push_back("bx");
     }
 
-    lowered.instructions.push_back(inst);
+   lowered.instructions.push_back(inst);
 
     if (!irInst.resultName.empty()) {
-        state.updateResultReg(irInst.resultName, destReg);
+        // Check if result is 32-bit
+        bool is32 = irInst.resultType && irInst.resultType->bitWidth == 32;
+        
+        if (is32) {
+            // For 32-bit results, store to stack (BX holds high word, AX holds low word)
+            state.currentStackOffset -= 4;
+            state.tempSpaceInBlock += 4;
+            int stackOffset = state.currentStackOffset;
+            state.vregToStackOffset[irInst.resultName] = stackOffset;
+            
+            std::string lowStack = "bp" + std::to_string(stackOffset);
+            std::string highStack = "bp" + std::to_string(stackOffset + 2);
+            
+            // Store low word (AX)
+            Instruction286 storeLow;
+            storeLow.mnemonic = "mov";
+            storeLow.operands.push_back("[" + lowStack + "]");
+            storeLow.operands.push_back("ax");
+            lowered.instructions.push_back(storeLow);
+            
+            // Store high word (BX)
+            Instruction286 storeHigh;
+            storeHigh.mnemonic = "mov";
+            storeHigh.operands.push_back("[" + highStack + "]");
+            storeHigh.operands.push_back("bx");
+            lowered.instructions.push_back(storeHigh);
+            
+            state.mark32Bit(irInst.resultName);
+            state.vregToPhys[irInst.resultName] = lowStack;
+        } else {
+            state.updateResultReg(irInst.resultName, destReg);
+        }
     }
 
     loweredVec.push_back(lowered);
