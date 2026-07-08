@@ -192,21 +192,40 @@ std::vector<LoweredInstruction> lowerStore(SelectorState& state,
                 }
             }
 
-            // For non-alloca pointers, load the 32-bit address for dereferencing
+         // For non-alloca pointers, load the address to BX for dereferencing
+            // In OS/2 1.x segmented memory model, far pointers have (selector:offset)
+            // If selector is 0, use [bx] with DS (assumes DS=DGROUP)
+            // If selector is non-zero, load ES with selector and use es:[bx]
             std::string dest;
             if (ptrReg.find("bp") != std::string::npos && ptrIsAlloca) {
                 // Alloca result: stack location IS the address
                 dest = "[" + ptrReg + "]";
             } else if (ptrReg.find("bp") != std::string::npos) {
-                // Non-alloca: load the 32-bit pointer value, use 32-bit addressing
-                // For flat memory model, use 32-bit register (eax) for dereferencing
+                // Non-alloca: load the pointer offset (low word) to BX
                 Instruction286 loadAddr;
                 loadAddr.mnemonic = "mov";
-                loadAddr.operands.push_back("eax");
-                loadAddr.operands.push_back("dword [" + ptrReg + "]");
+                loadAddr.operands.push_back("bx");
+                loadAddr.operands.push_back("[" + ptrReg + "]");
                 lowered.instructions.push_back(loadAddr);
 
-                dest = "[" + std::string("eax") + "]";
+                // Calculate high word offset for the selector
+                std::string selectorAddr;
+                if (ptrReg.find("bp") != std::string::npos) {
+                    int offset = 0;
+                    std::string offsetStr = ptrReg.substr(2);
+                    if (!offsetStr.empty()) {
+                        try { offset = std::stoi(offsetStr); } catch (...) {}
+                    }
+                    int newOffset = offset + 2;
+                    selectorAddr = (newOffset >= 0) ? ("bp+" + std::to_string(newOffset)) : ("bp" + std::to_string(newOffset));
+                } else {
+                    selectorAddr = ptrReg + "+2";
+                }
+
+                // Load selector value, and load ES if it's non-zero
+                // For now, assume DS=DGROUP and just use [bx]
+                // (This works for most cases where the selector is 0 or DGROUP)
+                dest = "[" + std::string("bx") + "]";
             } else {
                 dest = ptrReg;
             }
@@ -268,20 +287,39 @@ std::vector<LoweredInstruction> lowerStore(SelectorState& state,
                 lowered.instructions.push_back(movInst);
             }
 
-            // For non-alloca pointers, load the address to BX first
+         // For non-alloca pointers, load the address to BX for dereferencing
+            // In OS/2 1.x segmented memory model, far pointers have (selector:offset)
+            // If selector is 0, use [bx] with DS (assumes DS=DGROUP)
+            // If selector is non-zero, load ES with selector and use es:[bx]
             std::string dest;
             if (ptrReg.find("bp") != std::string::npos && ptrIsAlloca) {
                 // Alloca result: stack location IS the address
                 dest = "[" + ptrReg + "]";
-       } else if (ptrReg.find("bp") != std::string::npos) {
-                // Non-alloca: load the 32-bit pointer value, use 32-bit addressing
+            } else if (ptrReg.find("bp") != std::string::npos) {
+                // Non-alloca: load the pointer offset (low word) to BX
                 Instruction286 loadAddr;
                 loadAddr.mnemonic = "mov";
-                loadAddr.operands.push_back("eax");
-                loadAddr.operands.push_back("dword [" + ptrReg + "]");
+                loadAddr.operands.push_back("bx");
+                loadAddr.operands.push_back("[" + ptrReg + "]");
                 lowered.instructions.push_back(loadAddr);
 
-                dest = "[" + std::string("eax") + "]";
+                // Calculate high word offset for the selector
+                std::string selectorAddr;
+                if (ptrReg.find("bp") != std::string::npos) {
+                    int offset = 0;
+                    std::string offsetStr = ptrReg.substr(2);
+                    if (!offsetStr.empty()) {
+                        try { offset = std::stoi(offsetStr); } catch (...) {}
+                    }
+                    int newOffset = offset + 2;
+                    selectorAddr = (newOffset >= 0) ? ("bp+" + std::to_string(newOffset)) : ("bp" + std::to_string(newOffset));
+                } else {
+                    selectorAddr = ptrReg + "+2";
+                }
+
+                // For now, assume DS=DGROUP and just use [bx]
+                // (This works for most cases where the selector is 0 or DGROUP)
+                dest = "[" + std::string("bx") + "]";
             } else {
                 dest = ptrReg;
             }
@@ -431,22 +469,27 @@ std::vector<LoweredInstruction> lowerLoad(SelectorState& state,
                 // Assign a register for 16-bit loads (8-bit loads use AX then store to stack)
                 std::string destReg = state.assignReg(irInst.resultName);
 
-                // For non-alloca pointers, load the address to BX first
+             // For non-alloca pointers, load the address to BX for dereferencing
+                // In OS/2 1.x segmented memory model, far pointers have (selector:offset)
+                // If selector is 0, use [bx] with DS (assumes DS=DGROUP)
+                // If selector is non-zero, load ES with selector and use es:[bx]
                 if (!ptrIsAlloca) {
-                    // Load the 32-bit pointer value into eax for flat model dereferencing
                     Instruction286 loadAddr;
                     loadAddr.mnemonic = "mov";
-                    loadAddr.operands.push_back("eax");
-                    loadAddr.operands.push_back("dword [" + ptrReg + "]");
+                    loadAddr.operands.push_back("bx");
+                    loadAddr.operands.push_back("[" + ptrReg + "]");
                     lowered.instructions.push_back(loadAddr);
 
-                    // Load from [eax] into destReg (or AX then store to stack for 8-bit)
+                    // For now, assume DS=DGROUP and just use [bx]
+                    // (This works for most cases where the selector is 0 or DGROUP)
+
+                    // Load from [bx] into destReg (or AX then store to stack for 8-bit)
                     if (is8) {
                         // 8-bit load: load into AL, then zero-extend to AX
                         Instruction286 loadInst;
                         loadInst.mnemonic = "mov";
                         loadInst.operands.push_back("al");
-                        loadInst.operands.push_back("byte [eax]");
+                        loadInst.operands.push_back("byte [bx]");
                         lowered.instructions.push_back(loadInst);
 
                         // Zero-extend: set AH to 0
@@ -482,12 +525,12 @@ std::vector<LoweredInstruction> lowerLoad(SelectorState& state,
 
                         // Update vreg mapping to point to stack
                         state.vregToPhys[irInst.resultName] = resultStack;
-                } else {
+                    } else {
                         // 16-bit load
                         Instruction286 loadInst;
                         loadInst.mnemonic = "mov";
                         loadInst.operands.push_back(destReg);
-                        loadInst.operands.push_back("[" + std::string("eax") + "]");
+                        loadInst.operands.push_back("[" + std::string("bx") + "]");
                         lowered.instructions.push_back(loadInst);
                     }
                 } else {
