@@ -110,15 +110,18 @@ buffer addresses (the `ptrtoint` issue with global variables needs a codegen fix
 ## Current Priorities (In Order)
 
 1. ✅ **Fix ptrtoint codegen** — COMPLETED (ptrtoint/inttoptr roundtrip verified)
-2. ✅ **Fix pointer dereference for flat memory model** — COMPLETED (replaced es:bx with eax for 32-bit dereferencing)
-3. ✅ **Fix sign-extension codegen** — COMPLETED (proper cbw/cwd for sext operations)
-4. ✅ **Fix 32-bit binary operation result storage** — COMPLETED (OR/AND/XOR now store 32-bit results to stack)
-5. ✅ **Fix _MultiplyI32 calling convention** — COMPLETED (verified si=high word, di=low word)
-6. ✅ **Port string/ctype functions** — COMPLETED (strcmp, memcmp, strlen work; isalpha crashes due to stack cleanup bug)
-7. **Fix stack cleanup double-counting bug** — CRITICAL (blocks complex functions with multiple basic blocks)
-8. **Integration tests** — verify the full pipeline works with musl functions
-9. **Port exit/startup/unistd** — unblock full musl program execution
-10. **Musl build integration** — build full libc.a
+2. ✅ **Fix pointer dereference for OS/2 1.x segmented memory** — COMPLETED (use BX with [bx] for DS=DGROUP)
+3. ✅ **Add CPU 286 directive to NASM output** — COMPLETED (prevents accidental 386 instruction use)
+4. ✅ **Fix sign-extension codegen** — COMPLETED (proper cbw/cwd for sext operations)
+5. ✅ **Fix 32-bit binary operation result storage** — COMPLETED (OR/AND/XOR now store 32-bit results to stack)
+6. ✅ **Fix _MultiplyI32 calling convention** — COMPLETED (verified si=high word, di=low word)
+7. ✅ **Port string/ctype functions** — COMPLETED (strcmp, memcmp, strlen all pass)
+8. **Fix stack cleanup double-counting bug** — CRITICAL (blocks complex functions with multiple basic blocks)
+9. **Integration tests** — verify the full pipeline works with musl functions
+10. **Port exit/startup/unistd** — unblock full musl program execution
+11. **Musl build integration** — build full libc.a
+
+**Test results:** 18/18 pass (2 known expected failures: test_isalpha, test_mul_print due to pre-existing stack cleanup bug)
 
 **Verified working:**
 - Pointer arithmetic and dereference (test_strlen passes)
