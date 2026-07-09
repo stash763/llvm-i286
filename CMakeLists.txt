@@ -120,6 +120,8 @@ add_library(codegen
     src/codegen/CodeGen.cpp
     src/codegen/InstructionSelect.cpp
     src/codegen/InstructionSelectUtils.cpp
+    src/codegen/StackFrame.cpp
+    src/codegen/FunctionAnalysis.cpp
     src/codegen/ControlFlowOps.cpp
     src/codegen/ArithmeticOps.cpp
     src/codegen/BitwiseOps.cpp

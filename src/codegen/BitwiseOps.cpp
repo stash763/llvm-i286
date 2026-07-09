@@ -31,17 +31,17 @@ static std::vector<LoweredInstruction> lowerBinaryOp(
         std::string op2Name = irInst.operands[1].name;
 
         // Check if operands are vregs (exist in state maps)
-        bool op1IsVreg = state.vregToPhys.find(op1Name) != state.vregToPhys.end() ||
-                         state.vregToStackOffset.find(op1Name) != state.vregToStackOffset.end();
-        bool op2IsVreg = state.vregToPhys.find(op2Name) != state.vregToPhys.end() ||
-                         state.vregToStackOffset.find(op2Name) != state.vregToStackOffset.end();
+        bool op1IsVreg = state.frame.hasSlot(op1Name) ||
+                         state.frame.hasSlot(op1Name);
+        bool op2IsVreg = state.frame.hasSlot(op2Name) ||
+                         state.frame.hasSlot(op2Name);
 
         // Check if operands are constants (only if not vregs)
         bool op2IsConst = !op2IsVreg && isConstantInt(op2Name);
 
         op1IsConst = !op1IsVreg && isConstantInt(op1Name);
-        op1 = op1IsConst ? op1Name : state.getPhysReg(op1Name);
-        std::string op2 = op2IsConst ? op2Name : state.getPhysReg(op2Name);
+        op1 = op1IsConst ? op1Name : state.frame.getPhysReg(op1Name);
+        std::string op2 = op2IsConst ? op2Name : state.frame.getPhysReg(op2Name);
 
         // If op1 is a memory operand, we need to load it to a register first
         op1IsMem = !op1IsConst && op1.find("bp") != std::string::npos;
@@ -91,13 +91,10 @@ static std::vector<LoweredInstruction> lowerBinaryOp(
             zeroHigh.operands.push_back("dx");
             lowered.instructions.push_back(zeroHigh);
             
-            state.currentStackOffset -= 4;
-            state.tempSpaceInBlock += 4;
-            int stackOffset = state.currentStackOffset;
-            state.vregToStackOffset[irInst.resultName] = stackOffset;
-            
-            std::string lowStack = "bp" + std::to_string(stackOffset);
-            std::string highStack = "bp" + std::to_string(stackOffset + 2);
+            // Stack space pre-allocated in prologue
+            std::string tempSlot = state.frame.allocTemp(4, true);
+            std::string lowStack = tempSlot;
+            std::string highStack = state.frame.getHighBpOffset(irInst.resultName);
             
             // Store low word (AX)
             Instruction286 storeLow;
@@ -113,10 +110,10 @@ static std::vector<LoweredInstruction> lowerBinaryOp(
             storeHigh.operands.push_back("dx");
             lowered.instructions.push_back(storeHigh);
             
-            state.mark32Bit(irInst.resultName);
-            state.vregToPhys[irInst.resultName] = lowStack;
+            // 32-bit tracking now in StackFrame
+            
         } else {
-            state.updateResultReg(irInst.resultName, destReg);
+            state.frame.setPhysReg(irInst.resultName, destReg);
         }
     }
 
@@ -148,17 +145,17 @@ static std::vector<LoweredInstruction> lowerShiftOp(
         std::string op2Name = irInst.operands[1].name;
 
         // Check if operands are vregs
-        bool op1IsVreg = state.vregToPhys.find(op1Name) != state.vregToPhys.end() ||
-                         state.vregToStackOffset.find(op1Name) != state.vregToStackOffset.end();
-        bool op2IsVreg = state.vregToPhys.find(op2Name) != state.vregToPhys.end() ||
-                         state.vregToStackOffset.find(op2Name) != state.vregToStackOffset.end();
+        bool op1IsVreg = state.frame.hasSlot(op1Name) ||
+                         state.frame.hasSlot(op1Name);
+        bool op2IsVreg = state.frame.hasSlot(op2Name) ||
+                         state.frame.hasSlot(op2Name);
 
         // Check if operands are constants (only if not vregs)
         bool op2IsConst = !op2IsVreg && isConstantInt(op2Name);
 
         op1IsConst = !op1IsVreg && isConstantInt(op1Name);
-        op1 = op1IsConst ? op1Name : state.getPhysReg(op1Name);
-        op2 = op2IsConst ? op2Name : state.getPhysReg(op2Name);
+        op1 = op1IsConst ? op1Name : state.frame.getPhysReg(op1Name);
+        op2 = op2IsConst ? op2Name : state.frame.getPhysReg(op2Name);
 
         // Shift count must be in CL for variable shifts, or immediate
         if (!op2IsConst && op2 != "cl" && op2 != "cx") {
@@ -205,7 +202,7 @@ static std::vector<LoweredInstruction> lowerShiftOp(
     lowered.instructions.push_back(inst);
 
     if (!irInst.resultName.empty()) {
-        state.updateResultReg(irInst.resultName, destReg);
+        state.frame.setPhysReg(irInst.resultName, destReg);
     }
 
     loweredVec.push_back(lowered);

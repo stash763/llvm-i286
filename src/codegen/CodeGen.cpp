@@ -88,7 +88,8 @@ std::string CodeGen::generate(const ir::Module& module) {
             auto lowered = selector.lowerFunction(*func);
             
             // Emit function with full prologue/epilogue
-            allFunctions += emitter.emitFunction(lowered, func->name);
+            int frameSize = selector.getFrameSize();
+            allFunctions += emitter.emitFunction(lowered, func->name, frameSize);
             allFunctions += "\n";
         }
     }

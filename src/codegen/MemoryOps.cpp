@@ -13,35 +13,16 @@ std::vector<LoweredInstruction> lowerAlloca(SelectorState& state,
     std::vector<LoweredInstruction> loweredVec;
     LoweredInstruction lowered;
 
-    // Allocate stack space
-    // The operand name contains the bit width as a string
-    int bitWidth = 32; // default
-    if (!irInst.operands.empty()) {
-        try {
-            bitWidth = std::stoi(irInst.operands[0].name);
-        } catch (...) {
-            bitWidth = 32;
-        }
+    // The alloca slot was already created during FunctionAnalysis (pass 1).
+    // Just set the phys reg mapping to point to the pre-allocated slot.
+    if (!irInst.resultName.empty() && state.frame.hasSlot(irInst.resultName)) {
+        std::string bpOffset = state.frame.getBpOffset(irInst.resultName);
+        state.frame.setPhysReg(irInst.resultName, bpOffset);
     }
 
-    int byteSize = bitWidth / 8;
-    if (byteSize < 2) byteSize = 2; // Minimum 2 bytes for 16-bit alignment
-
-    // Allocate stack space
-    int offset = state.allocateStack(byteSize);
-
-    // Store the stack offset for this variable
-    if (!irInst.resultName.empty()) {
-        state.vregToStackOffset[irInst.resultName] = offset;
-        // Mark as alloca result (this is an ADDRESS, not a value)
-        state.allocaVregs.insert(irInst.resultName);
-    }
-
-    Instruction286 subSp;
-    subSp.mnemonic = "sub";
-    subSp.operands.push_back("sp");
-    subSp.operands.push_back(std::to_string(byteSize));
-    lowered.instructions.push_back(subSp);
+    // NOTE: No sub sp emitted here - stack space is pre-allocated in prologue.
+    // The alloca slot was created during analysis and its space is included
+    // in the frame size.
 
     loweredVec.push_back(lowered);
     return loweredVec;
@@ -57,10 +38,10 @@ std::vector<LoweredInstruction> lowerStore(SelectorState& state,
     if (irInst.operands.size() >= 2) {
         std::string valName = irInst.operands[0].name;
         std::string ptrName = irInst.operands[1].name;
-        std::string ptrReg = state.getPhysReg(ptrName);
+        std::string ptrReg = state.frame.getPhysReg(ptrName);
 
         // Check if the pointer is an alloca result (ADDRESS, not VALUE)
-        bool ptrIsAlloca = state.allocaVregs.find(ptrName) != state.allocaVregs.end();
+        bool ptrIsAlloca = state.frame.isAlloca(ptrName);
 
         // Check if this is a 32-bit store
         // Check the type being stored (resultType) first, then fall back to vreg marking
@@ -69,15 +50,15 @@ std::vector<LoweredInstruction> lowerStore(SelectorState& state,
             is32 = true;
         } else if (!irInst.resultType) {
             // No resultType available (shouldn't happen for store), check vreg marking
-            is32 = state.is32BitReg(valName);
+            is32 = state.frame.is32bit(valName);
         }
         // Note: We do NOT mark valName as 32-bit here, since the same constant value
         // (e.g., "0") can be stored as different types. We mark the destination pointer.
 
         // Check if value is in a register (parameter or previously loaded value)
         // A parameter name like "0" or "1" will be in vregToPhys
-        std::string valReg = state.getPhysReg(valName);
-        bool isRegOrParam = (state.vregToPhys.find(valName) != state.vregToPhys.end());
+        std::string valReg = state.frame.getPhysReg(valName);
+        bool isRegOrParam = (state.frame.hasSlot(valName));
 
         // Check if value is a constant (not a parameter or vreg)
         bool isConst = false;
@@ -128,9 +109,9 @@ std::vector<LoweredInstruction> lowerStore(SelectorState& state,
                 lowered.instructions.push_back(xorDx);
             } else if (isRegOrParam) {
                 // Check if value is in vregToPhys (register or stack location)
-                auto valPhysIt = state.vregToPhys.find(valName);
-                if (valPhysIt != state.vregToPhys.end()) {
-                    std::string physReg = valPhysIt->second;
+                bool valFound = state.frame.hasSlot(valName);
+                if (valFound) {
+                    std::string physReg = state.frame.getPhysReg(valName);
                     if (physReg.find("bp") != std::string::npos) {
                         // Value is stored as a stack location in vregToPhys
                         Instruction286 loadLow;
@@ -261,7 +242,7 @@ std::vector<LoweredInstruction> lowerStore(SelectorState& state,
             lowered.instructions.push_back(storeHigh);
 
             // Mark destination pointer as 32-bit (for subsequent loads)
-            state.mark32Bit(ptrName);
+            // 32-bit tracking now in StackFrame
         } else {
             // Check if this is an 8-bit store
             bool is8 = irInst.resultType && irInst.resultType->bitWidth == 8;
@@ -352,13 +333,13 @@ std::vector<LoweredInstruction> lowerLoad(SelectorState& state,
     // Load value from memory
     // Operands: [0] = pointer to load from
     if (!irInst.operands.empty()) {
-        std::string ptrReg = state.getPhysReg(irInst.operands[0].name);
+        std::string ptrReg = state.frame.getPhysReg(irInst.operands[0].name);
 
         // Check if ptrReg is a bp-relative address (contains "bp")
         bool ptrIsMem = (ptrReg.find("bp") != std::string::npos);
 
         // Check if the pointer is an alloca result (ADDRESS, not VALUE)
-        bool ptrIsAlloca = state.allocaVregs.find(irInst.operands[0].name) != state.allocaVregs.end();
+        bool ptrIsAlloca = state.frame.isAlloca(irInst.operands[0].name);
 
         // Check if this is a 32-bit load
         bool is32 = irInst.resultType && irInst.resultType->bitWidth == 32;
@@ -372,32 +353,33 @@ std::vector<LoweredInstruction> lowerLoad(SelectorState& state,
                 // then use that value as the address to load from
                 std::string actualAddr = stackLoc;
                 if (!ptrIsAlloca) {
-                    // Load the 16-bit address from the pointer value to BX
-                    Instruction286 loadAddr;
-                    loadAddr.mnemonic = "mov";
-                    loadAddr.operands.push_back("bx");
-                    loadAddr.operands.push_back("[" + stackLoc + "]");
-                    lowered.instructions.push_back(loadAddr);
+                    // Load the 16-bit address to BX for dereferencing
+                    if (stackLoc.find("bp") != std::string::npos) {
+                        // Pointer is at a stack location
+                        Instruction286 loadAddr;
+                        loadAddr.mnemonic = "mov";
+                        loadAddr.operands.push_back("bx");
+                        loadAddr.operands.push_back("[" + stackLoc + "]");
+                        lowered.instructions.push_back(loadAddr);
+                    } else {
+                        // Pointer is in a register - move to bx
+                        Instruction286 movAddr;
+                        movAddr.mnemonic = "mov";
+                        movAddr.operands.push_back("bx");
+                        movAddr.operands.push_back(stackLoc);
+                        lowered.instructions.push_back(movAddr);
+                    }
                     actualAddr = "bx";
                 }
 
-                // Get result stack location
+               // Get result stack location
                 // If the result doesn't have a stack offset, allocate one
-                std::string resultStack = state.getPhysReg(irInst.resultName);
+                std::string resultStack = state.frame.getPhysReg(irInst.resultName);
                 if (resultStack == "ax" || resultStack == "bx" || resultStack == "cx" || resultStack == "dx") {
-                    // Result is not on stack - allocate stack space
-                    state.currentStackOffset -= 4; // 32-bit = 4 bytes
-                    state.tempSpaceInBlock += 4;   // track temp space for cleanup
-                    int stackOffset = state.currentStackOffset;
-                    state.vregToStackOffset[irInst.resultName] = stackOffset;
-                    resultStack = "bp" + std::to_string(stackOffset);
-
-                    // Emit stack allocation
-                    Instruction286 subSp;
-                    subSp.mnemonic = "sub";
-                    subSp.operands.push_back("sp");
-                    subSp.operands.push_back("4");
-                    lowered.instructions.push_back(subSp);
+                    // Result is not on stack - allocate temp space (pre-allocated in prologue)
+                    std::string tempSlot = state.frame.allocTemp(4, true);
+                    resultStack = tempSlot;
+                    // NOTE: No sub sp emitted - temp space is pre-allocated
                 }
 
                 // Load low word from [actualAddr] into AX
@@ -441,33 +423,32 @@ std::vector<LoweredInstruction> lowerLoad(SelectorState& state,
                 // Store high word to result
                 Instruction286 storeHigh;
                 storeHigh.mnemonic = "mov";
-                if (resultStack.find("bp") != std::string::npos) {
-                    int offset = 0;
-                    std::string offsetStr = resultStack.substr(2);
-                    if (!offsetStr.empty()) {
-                        try { offset = std::stoi(offsetStr); } catch (...) {}
-                    }
-                    int newOffset = offset + 2;
-                    std::string offsetStr2 = (newOffset >= 0) ? ("+" + std::to_string(newOffset)) : std::to_string(newOffset);
-                    storeHigh.operands.push_back("[" + std::string("bp") + offsetStr2 + "]");
-                } else {
-                    storeHigh.operands.push_back("[" + resultStack + "+2]");
-                }
+                std::string highOffset = state.frame.getHighBpOffset(resultStack);
+                storeHigh.operands.push_back("[" + highOffset + "]");
                 storeHigh.operands.push_back("dx");
                 lowered.instructions.push_back(storeHigh);
 
                 // Mark result as 32-bit
-                state.mark32Bit(irInst.resultName);
+                // 32-bit tracking now in StackFrame
 
                 // Update vreg mapping to point to stack (not register)
                 // This ensures subsequent operations use the stack location
-                state.vregToPhys[irInst.resultName] = resultStack;
+                state.frame.setPhysReg(irInst.resultName, resultStack);
+                
             } else {
                 // Check if this is an 8-bit load
                 bool is8 = irInst.resultType && irInst.resultType->bitWidth == 8;
 
-                // Assign a register for 16-bit loads (8-bit loads use AX then store to stack)
-                std::string destReg = state.assignReg(irInst.resultName);
+                // 8-bit loads always use AX (required for cbw/cwd in sext)
+                // 16-bit loads use a free temp register
+                std::string destReg;
+                if (is8) {
+                    destReg = "ax";
+                    state.frame.setPhysReg(irInst.resultName, "ax");
+                } else {
+                    state.frame.setPhysReg(irInst.resultName, state.frame.getFreeTempReg());
+                    destReg = state.frame.getPhysReg(irInst.resultName);
+                }
 
              // For non-alloca pointers, load the address to BX for dereferencing
                 // In OS/2 1.x segmented memory model, far pointers have (selector:offset)
@@ -500,21 +481,12 @@ std::vector<LoweredInstruction> lowerLoad(SelectorState& state,
                         lowered.instructions.push_back(zeroExt);
 
                         // Store AX to stack location for the result vreg
-                        std::string resultStack = state.getPhysReg(irInst.resultName);
+                        std::string resultStack = state.frame.getPhysReg(irInst.resultName);
                         if (resultStack == "ax" || resultStack == "bx" || resultStack == "cx" || resultStack == "dx") {
-                            // Result is not on stack - allocate stack space
-                            state.currentStackOffset -= 2; // 16-bit = 2 bytes
-                            state.tempSpaceInBlock += 2;   // track temp space for cleanup
-                            int stackOffset = state.currentStackOffset;
-                            state.vregToStackOffset[irInst.resultName] = stackOffset;
-                            resultStack = "bp" + std::to_string(stackOffset);
-
-                            // Emit stack allocation
-                            Instruction286 subSp;
-                            subSp.mnemonic = "sub";
-                            subSp.operands.push_back("sp");
-                            subSp.operands.push_back("2");
-                            lowered.instructions.push_back(subSp);
+                            // Result is not on stack - allocate temp space (pre-allocated in prologue)
+                            std::string tempSlot = state.frame.allocTemp(2, false);
+                            resultStack = tempSlot;
+                            // NOTE: No sub sp - temp space is pre-allocated
                         }
                         // Store AX to result stack location
                         Instruction286 storeResult;
@@ -524,7 +496,7 @@ std::vector<LoweredInstruction> lowerLoad(SelectorState& state,
                         lowered.instructions.push_back(storeResult);
 
                         // Update vreg mapping to point to stack
-                        state.vregToPhys[irInst.resultName] = resultStack;
+                        
                     } else {
                         // 16-bit load
                         Instruction286 loadInst;
@@ -535,12 +507,30 @@ std::vector<LoweredInstruction> lowerLoad(SelectorState& state,
                     }
                 } else {
                     // Load from [bp-N] into destReg (alloca result, address is the stack location)
+                    // But first check if ptrReg is actually a valid memory address (bp-relative)
+                    // If it's a register like ax/cx/dx, we need to move it to bx first
+                    std::string actualLoadAddr = ptrReg;
+                    if (ptrReg.find("bp") == std::string::npos &&
+                        ptrReg != "bx" && ptrReg != "si" && ptrReg != "di") {
+                        // Register pointer - move to bx for addressing
+                        Instruction286 movPtr;
+                        movPtr.mnemonic = "mov";
+                        movPtr.operands.push_back("bx");
+                        movPtr.operands.push_back(ptrReg);
+                        lowered.instructions.push_back(movPtr);
+                        actualLoadAddr = "bx";
+                    }
+
                     if (is8) {
                         // 8-bit load: load into AL, then zero-extend to AX
                         Instruction286 loadInst;
                         loadInst.mnemonic = "mov";
                         loadInst.operands.push_back("al");
-                        loadInst.operands.push_back("byte [" + ptrReg + "]");
+                        if (actualLoadAddr.find("bp") != std::string::npos) {
+                            loadInst.operands.push_back("byte [" + actualLoadAddr + "]");
+                        } else {
+                            loadInst.operands.push_back("byte [" + actualLoadAddr + "]");
+                        }
                         lowered.instructions.push_back(loadInst);
 
                         // Zero-extend: set AH to 0
@@ -551,21 +541,12 @@ std::vector<LoweredInstruction> lowerLoad(SelectorState& state,
                         lowered.instructions.push_back(zeroExt);
 
                         // Store AX to stack location for the result vreg
-                        std::string resultStack = state.getPhysReg(irInst.resultName);
+                        std::string resultStack = state.frame.getPhysReg(irInst.resultName);
                         if (resultStack == "ax" || resultStack == "bx" || resultStack == "cx" || resultStack == "dx") {
-                            // Result is not on stack - allocate stack space
-                            state.currentStackOffset -= 2; // 16-bit = 2 bytes
-                            state.tempSpaceInBlock += 2;   // track temp space for cleanup
-                            int stackOffset = state.currentStackOffset;
-                            state.vregToStackOffset[irInst.resultName] = stackOffset;
-                            resultStack = "bp" + std::to_string(stackOffset);
-
-                            // Emit stack allocation
-                            Instruction286 subSp;
-                            subSp.mnemonic = "sub";
-                            subSp.operands.push_back("sp");
-                            subSp.operands.push_back("2");
-                            lowered.instructions.push_back(subSp);
+                            // Result is not on stack - allocate temp space (pre-allocated in prologue)
+                            std::string tempSlot2 = state.frame.allocTemp(2, false);
+                            resultStack = tempSlot2;
+                            // NOTE: No sub sp - temp space is pre-allocated
                         }
                         // Store AX to result stack location
                         Instruction286 storeResult;
@@ -575,13 +556,17 @@ std::vector<LoweredInstruction> lowerLoad(SelectorState& state,
                         lowered.instructions.push_back(storeResult);
 
                         // Update vreg mapping to point to stack
-                        state.vregToPhys[irInst.resultName] = resultStack;
+                        
                     } else {
                         // 16-bit load
                         Instruction286 loadInst;
                         loadInst.mnemonic = "mov";
                         loadInst.operands.push_back(destReg);
-                        loadInst.operands.push_back("[" + ptrReg + "]");
+                        if (actualLoadAddr.find("bp") != std::string::npos) {
+                            loadInst.operands.push_back("[" + actualLoadAddr + "]");
+                        } else {
+                            loadInst.operands.push_back("[" + actualLoadAddr + "]");
+                        }
                         lowered.instructions.push_back(loadInst);
                     }
                 }
@@ -603,10 +588,13 @@ std::vector<LoweredInstruction> lowerGetElementPtr(SelectorState& state,
     // For opaque pointers (ptr), element size = 1 (byte-level arithmetic)
     // For typed pointers, element size = sizeof(elementType)
     if (!irInst.operands.empty()) {
-        std::string baseReg = state.getPhysReg(irInst.operands[0].name);
+        std::string baseReg = state.frame.getPhysReg(irInst.operands[0].name);
 
         // Check if this is a 32-bit pointer result
-        bool is32 = (irInst.resultType && irInst.resultType->bitWidth == 32);
+        // Pointers are always 32-bit on i286 (selector:offset)
+        bool is32 = (irInst.resultType && irInst.resultType->bitWidth == 32) ||
+                    (irInst.resultType && irInst.resultType->isPointer()) ||
+                    (!irInst.resultType);  // No resultType means pointer (default to 32-bit)
 
         // Determine element size from result type
         // For opaque pointers (void*), elemSize = 1
@@ -622,7 +610,7 @@ std::vector<LoweredInstruction> lowerGetElementPtr(SelectorState& state,
         if (is32) {
             // 32-bit GEP: load base pointer (low + high), add offset, store result
             // Check if base is an alloca result (address IS the stack offset, not a value at it)
-            bool baseIsAlloca = state.allocaVregs.find(irInst.operands[0].name) != state.allocaVregs.end();
+            bool baseIsAlloca = state.frame.isAlloca(irInst.operands[0].name);
 
               if (baseIsAlloca && baseReg.find("bp") != std::string::npos) {
                 // For alloca results: use lea to get the address (stack offset IS the address)
@@ -688,7 +676,7 @@ std::vector<LoweredInstruction> lowerGetElementPtr(SelectorState& state,
                     isConst = true;
                 } catch (...) {}
 
-                std::string idxReg = state.getPhysReg(irInst.operands[i].name);
+                std::string idxReg = state.frame.getPhysReg(irInst.operands[i].name);
 
                 if (isConst && constVal != 0) {
                     // Add constant offset to low word
@@ -758,19 +746,9 @@ std::vector<LoweredInstruction> lowerGetElementPtr(SelectorState& state,
 
             // Store result to 32-bit stack slot
             if (!irInst.resultName.empty()) {
-                // Allocate 32-bit stack slot for result
-                state.currentStackOffset -= 4;
-                state.tempSpaceInBlock += 4;   // track temp space for cleanup
-                int stackOffset = state.currentStackOffset;
-                state.vregToStackOffset[irInst.resultName] = stackOffset;
-                std::string resultStack = "bp" + std::to_string(stackOffset);
-                state.mark32Bit(irInst.resultName);
-
-                Instruction286 subSp;
-                subSp.mnemonic = "sub";
-                subSp.operands.push_back("sp");
-                subSp.operands.push_back("4");
-                lowered.instructions.push_back(subSp);
+                // Allocate 32-bit stack slot for result (pre-allocated in prologue)
+                std::string tempSlot3 = state.frame.allocTemp(4, true);
+                std::string resultStack = tempSlot3;
 
                 // Store low word
                 Instruction286 storeLow;
@@ -782,20 +760,18 @@ std::vector<LoweredInstruction> lowerGetElementPtr(SelectorState& state,
                 // Store high word
                 Instruction286 storeHigh;
                 storeHigh.mnemonic = "mov";
-                int offset = stackOffset;
-                int newOffset = offset + 2;
-                std::string offsetStr2 = (newOffset >= 0) ? ("+" + std::to_string(newOffset)) : std::to_string(newOffset);
-                storeHigh.operands.push_back("[" + std::string("bp") + offsetStr2 + "]");
+                std::string highOffset = state.frame.getHighBpOffset(resultStack);
+                storeHigh.operands.push_back("[" + highOffset + "]");
                 storeHigh.operands.push_back("dx");
                 lowered.instructions.push_back(storeHigh);
 
-                state.vregToPhys[irInst.resultName] = resultStack;
-                state.physToVreg[resultStack] = irInst.resultName;
+                // Mark result as 32-bit and update phys reg tracking
+                state.frame.setPhysReg(irInst.resultName, resultStack);
             }
         } else {
             // 16-bit GEP
             // Check if base is an alloca result (address IS the stack offset, not a value at it)
-            bool baseIsAlloca = state.allocaVregs.find(irInst.operands[0].name) != state.allocaVregs.end();
+            bool baseIsAlloca = state.frame.isAlloca(irInst.operands[0].name);
 
             // Move/lea base to AX
             if (baseReg != "ax") {
@@ -830,7 +806,7 @@ std::vector<LoweredInstruction> lowerGetElementPtr(SelectorState& state,
                     isConst = true;
                 } catch (...) {}
 
-                std::string idxReg = state.getPhysReg(irInst.operands[i].name);
+                std::string idxReg = state.frame.getPhysReg(irInst.operands[i].name);
 
                 if (isConst && constVal != 0) {
                     Instruction286 addConst;
@@ -875,7 +851,7 @@ std::vector<LoweredInstruction> lowerGetElementPtr(SelectorState& state,
             }
 
             if (!irInst.resultName.empty()) {
-                state.updateResultReg(irInst.resultName, "ax");
+                state.frame.setPhysReg(irInst.resultName, "ax");
             }
         }
     }

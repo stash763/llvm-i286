@@ -37,7 +37,7 @@ std::vector<LoweredInstruction> lowerFpuArith(SelectorState& state,
 
         // If both operands are vregs, load second operand and operate
         if (irInst.operands.size() >= 2) {
-            std::string op2Reg = state.getPhysReg(op2Name);
+            std::string op2Reg = state.frame.getPhysReg(op2Name);
             if (op2Reg.find("bp") != std::string::npos) {
                 fpuInst.operands.push_back("[" + op2Reg + "]");
             } else {
@@ -64,7 +64,7 @@ std::vector<LoweredInstruction> lowerFRem(SelectorState& state,
 
     if (!irInst.operands.empty()) {
         std::string op2Name = irInst.operands[0].name;
-        std::string op2Reg = state.getPhysReg(op2Name);
+        std::string op2Reg = state.frame.getPhysReg(op2Name);
 
         Instruction286 fprem;
         fprem.mnemonic = "fprem";
@@ -91,7 +91,7 @@ std::vector<LoweredInstruction> lowerFCmp(SelectorState& state,
         std::string op2Name = irInst.operands[1].name;
 
         // Load op1 to ST(0) if needed
-        std::string op1Reg = state.getPhysReg(op1Name);
+        std::string op1Reg = state.frame.getPhysReg(op1Name);
         if (op1Reg.find("bp") != std::string::npos) {
             Instruction286 fld;
             fld.mnemonic = "fld";
@@ -100,7 +100,7 @@ std::vector<LoweredInstruction> lowerFCmp(SelectorState& state,
         }
 
         // Compare with op2
-        std::string op2Reg = state.getPhysReg(op2Name);
+        std::string op2Reg = state.frame.getPhysReg(op2Name);
         Instruction286 fcom;
         fcom.mnemonic = "fcom";
         if (op2Reg.find("bp") != std::string::npos) {
@@ -138,7 +138,7 @@ std::vector<LoweredInstruction> lowerFpuConvert(SelectorState& state,
     LoweredInstruction lowered;
 
     if (!irInst.operands.empty()) {
-        std::string opReg = state.getPhysReg(irInst.operands[0].name);
+        std::string opReg = state.frame.getPhysReg(irInst.operands[0].name);
 
         // Store to memory with appropriate size
         // This is a placeholder - full implementation would handle FPU stack
@@ -168,7 +168,7 @@ std::vector<LoweredInstruction> lowerFPToInt(SelectorState& state,
     LoweredInstruction lowered;
 
     if (!irInst.operands.empty()) {
-        std::string opReg = state.getPhysReg(irInst.operands[0].name);
+        std::string opReg = state.frame.getPhysReg(irInst.operands[0].name);
 
         Instruction286 fistp;
         fistp.mnemonic = irInst.opcode == ir::Opcode::FPToUI ? "fistp" : "fistp";
@@ -182,7 +182,7 @@ std::vector<LoweredInstruction> lowerFPToInt(SelectorState& state,
 
         // Result in AX
         if (!irInst.resultName.empty()) {
-            state.updateResultReg(irInst.resultName, "ax");
+            state.frame.setPhysReg(irInst.resultName, "ax");
         }
     }
 
@@ -197,7 +197,7 @@ std::vector<LoweredInstruction> lowerIntToFP(SelectorState& state,
     LoweredInstruction lowered;
 
     if (!irInst.operands.empty()) {
-        std::string opReg = state.getPhysReg(irInst.operands[0].name);
+        std::string opReg = state.frame.getPhysReg(irInst.operands[0].name);
 
         Instruction286 fild;
         fild.mnemonic = "fild";

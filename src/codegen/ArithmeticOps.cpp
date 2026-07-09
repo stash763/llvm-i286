@@ -24,20 +24,20 @@ std::vector<LoweredInstruction> lowerAdd(SelectorState& state,
             std::string op2Name = irInst.operands[1].name;
 
             // Mark result as 32-bit
-            state.mark32Bit(irInst.resultName);
+            // 32-bit tracking now in StackFrame
 
             // For 32-bit operations, always use stack locations
-            std::string op1Stack = state.getPhysReg(op1Name);
+            std::string op1Stack = state.frame.getPhysReg(op1Name);
 
             // Check if op2 is a vreg (exists in state maps)
-            bool op2IsVreg = state.vregToPhys.find(op2Name) != state.vregToPhys.end() ||
-                             state.vregToStackOffset.find(op2Name) != state.vregToStackOffset.end();
+            bool op2IsVreg = state.frame.hasSlot(op2Name) ||
+                             state.frame.hasSlot(op2Name);
             
             // Check if op2 is a constant (only if not a vreg)
-            bool op2IsConst = !op2IsVreg && state.isConstant(op2Name);
+            bool op2IsConst = !op2IsVreg && state.frame.classifyOperand(op2Name) == StackFrame::OperandKind::Constant;
             std::string op2Stack;
             if (!op2IsConst) {
-                op2Stack = state.getPhysReg(op2Name);
+                op2Stack = state.frame.getPhysReg(op2Name);
             }
 
             // Load op1 low word to AX, high word to BX
@@ -121,19 +121,10 @@ std::vector<LoweredInstruction> lowerAdd(SelectorState& state,
 
             // Store result to stack (result is in BX:AX)
             if (!irInst.resultName.empty()) {
-                std::string resultStack = state.getPhysReg(irInst.resultName);
+                std::string resultStack = state.frame.getPhysReg(irInst.resultName);
                 // If result doesn't have stack space, allocate it
                 if (resultStack.find("bp") == std::string::npos) {
-                    state.currentStackOffset -= 4;
-                    state.tempSpaceInBlock += 4;   // track temp space for cleanup
-                    int stackOffset = state.currentStackOffset;
-                    state.vregToStackOffset[irInst.resultName] = stackOffset;
-                    resultStack = "bp" + std::to_string(stackOffset);
-                    Instruction286 subSp;
-                    subSp.mnemonic = "sub";
-                    subSp.operands.push_back("sp");
-                    subSp.operands.push_back("4");
-                    lowered.instructions.push_back(subSp);
+                    resultStack = state.frame.allocTemp(4, true);
                 }
                 Instruction286 storeLow;
                 storeLow.mnemonic = "mov";
@@ -143,23 +134,14 @@ std::vector<LoweredInstruction> lowerAdd(SelectorState& state,
 
                 Instruction286 storeHigh;
                 storeHigh.mnemonic = "mov";
-                if (resultStack.find("bp") != std::string::npos) {
-                    int offset = 0;
-                    std::string offsetStr = resultStack.substr(2);
-                    if (!offsetStr.empty()) {
-                        try { offset = std::stoi(offsetStr); } catch (...) {}
-                    }
-                    int newOffset = offset + 2;
-                    std::string offsetStr2 = (newOffset >= 0) ? ("+" + std::to_string(newOffset)) : std::to_string(newOffset);
-                    storeHigh.operands.push_back("[" + std::string("bp") + offsetStr2 + "]");
-                } else {
-                    storeHigh.operands.push_back("[" + resultStack + "+2]");
-                }
+                std::string highOffset = state.frame.getHighBpOffset(resultStack);
+                storeHigh.operands.push_back("[" + highOffset + "]");
                 storeHigh.operands.push_back("bx");
                 lowered.instructions.push_back(storeHigh);
 
                 // Update vreg mapping to point to stack
-                state.vregToPhys[irInst.resultName] = resultStack;
+                state.frame.setPhysReg(irInst.resultName, resultStack);
+                
             }
         }
     } else {
@@ -172,8 +154,8 @@ std::vector<LoweredInstruction> lowerAdd(SelectorState& state,
             std::string op2Name = irInst.operands[1].name;
 
             // Check if operands are vregs/parameters first
-            bool op1IsVreg = (state.vregToPhys.find(op1Name) != state.vregToPhys.end());
-            bool op2IsVreg = (state.vregToPhys.find(op2Name) != state.vregToPhys.end());
+            bool op1IsVreg = (state.frame.hasSlot(op1Name));
+            bool op2IsVreg = (state.frame.hasSlot(op2Name));
 
             // Check if operands are constants (not vregs)
             bool op1IsConst = false;
@@ -185,8 +167,8 @@ std::vector<LoweredInstruction> lowerAdd(SelectorState& state,
                 try { std::stoi(op2Name); op2IsConst = true; } catch (...) {}
             }
 
-            std::string op1 = op1IsConst ? op1Name : state.getPhysReg(op1Name);
-            std::string op2 = op2IsConst ? op2Name : state.getPhysReg(op2Name);
+            std::string op1 = op1IsConst ? op1Name : state.frame.getPhysReg(op1Name);
+            std::string op2 = op2IsConst ? op2Name : state.frame.getPhysReg(op2Name);
 
             // Check if operands are memory locations (bp-relative)
             bool op1IsMem = !op1IsConst && (op1.find("bp") != std::string::npos);
@@ -240,7 +222,7 @@ std::vector<LoweredInstruction> lowerAdd(SelectorState& state,
 
             // Update register mapping - add writes to AX
             if (!irInst.resultName.empty()) {
-                state.updateResultReg(irInst.resultName, "ax");
+                state.frame.setPhysReg(irInst.resultName, "ax");
             }
         } else {
             // Fallback: add ax, bx
@@ -269,16 +251,16 @@ std::vector<LoweredInstruction> lowerSub(SelectorState& state,
             std::string op2Name = irInst.operands[1].name;
 
             // Mark result as 32-bit
-            state.mark32Bit(irInst.resultName);
+            // 32-bit tracking now in StackFrame
 
             // Get stack locations for both operands
-            std::string op1Stack = state.getPhysReg(op1Name);
+            std::string op1Stack = state.frame.getPhysReg(op1Name);
 
             // Check if op2 is a constant
-            bool op2IsConst = state.isConstant(op2Name);
+            bool op2IsConst = state.frame.classifyOperand(op2Name) == StackFrame::OperandKind::Constant;
             std::string op2Stack;
             if (!op2IsConst) {
-                op2Stack = state.getPhysReg(op2Name);
+                op2Stack = state.frame.getPhysReg(op2Name);
             }
 
             // Load op1 low word to AX, high word to BX
@@ -362,19 +344,11 @@ std::vector<LoweredInstruction> lowerSub(SelectorState& state,
 
             // Store result to stack (result is in BX:AX)
             if (!irInst.resultName.empty()) {
-                std::string resultStack = state.getPhysReg(irInst.resultName);
+                std::string resultStack = state.frame.getPhysReg(irInst.resultName);
                 // Allocate stack space if needed
                 if (resultStack.find("bp") == std::string::npos) {
-                    state.currentStackOffset -= 4;
-                    state.tempSpaceInBlock += 4;   // track temp space for cleanup
-                    int stackOffset = state.currentStackOffset;
-                    state.vregToStackOffset[irInst.resultName] = stackOffset;
-                    resultStack = "bp" + std::to_string(stackOffset);
-                    Instruction286 subSp;
-                    subSp.mnemonic = "sub";
-                    subSp.operands.push_back("sp");
-                    subSp.operands.push_back("4");
-                    lowered.instructions.push_back(subSp);
+                    // Stack space pre-allocated in prologue
+                    resultStack = state.frame.allocTemp(4, true);
                 }
                 Instruction286 storeLow;
                 storeLow.mnemonic = "mov";
@@ -384,23 +358,14 @@ std::vector<LoweredInstruction> lowerSub(SelectorState& state,
 
                 Instruction286 storeHigh;
                 storeHigh.mnemonic = "mov";
-                if (resultStack.find("bp") != std::string::npos) {
-                    int offset = 0;
-                    std::string offsetStr = resultStack.substr(2);
-                    if (!offsetStr.empty()) {
-                        try { offset = std::stoi(offsetStr); } catch (...) {}
-                    }
-                    int newOffset = offset + 2;
-                    std::string offsetStr2 = (newOffset >= 0) ? ("+" + std::to_string(newOffset)) : std::to_string(newOffset);
-                    storeHigh.operands.push_back("[" + std::string("bp") + offsetStr2 + "]");
-                } else {
-                    storeHigh.operands.push_back("[" + resultStack + "+2]");
-                }
+                std::string highOffset = state.frame.getHighBpOffset(resultStack);
+                storeHigh.operands.push_back("[" + highOffset + "]");
                 storeHigh.operands.push_back("bx");
                 lowered.instructions.push_back(storeHigh);
 
                 // Update vreg mapping
-                state.vregToPhys[irInst.resultName] = resultStack;
+                state.frame.setPhysReg(irInst.resultName, resultStack);
+                
             }
         }
     } else {
@@ -413,8 +378,8 @@ std::vector<LoweredInstruction> lowerSub(SelectorState& state,
             std::string op2Name = irInst.operands[1].name;
 
             // Check if operands are vregs/parameters first
-            bool op1IsVreg = (state.vregToPhys.find(op1Name) != state.vregToPhys.end());
-            bool op2IsVreg = (state.vregToPhys.find(op2Name) != state.vregToPhys.end());
+            bool op1IsVreg = (state.frame.hasSlot(op1Name));
+            bool op2IsVreg = (state.frame.hasSlot(op2Name));
 
             // Check if operands are constants (not vregs)
             bool op1IsConst = false;
@@ -426,8 +391,8 @@ std::vector<LoweredInstruction> lowerSub(SelectorState& state,
                 try { std::stoi(op2Name); op2IsConst = true; } catch (...) {}
             }
 
-            std::string op1 = op1IsConst ? op1Name : state.getPhysReg(op1Name);
-            std::string op2 = op2IsConst ? op2Name : state.getPhysReg(op2Name);
+            std::string op1 = op1IsConst ? op1Name : state.frame.getPhysReg(op1Name);
+            std::string op2 = op2IsConst ? op2Name : state.frame.getPhysReg(op2Name);
 
             // Move op1 to resultReg if it's not already there
             if (!op1IsConst && resultReg != op1) {
@@ -450,7 +415,7 @@ std::vector<LoweredInstruction> lowerSub(SelectorState& state,
 
             // Update register mapping - sub writes to resultReg
             if (!irInst.resultName.empty()) {
-                state.updateResultReg(irInst.resultName, resultReg);
+                state.frame.setPhysReg(irInst.resultName, resultReg);
             }
         } else {
             subInst.operands.push_back("ax");
@@ -479,25 +444,17 @@ std::vector<LoweredInstruction> lowerMul(SelectorState& state,
             std::string op1Name = irInst.operands[0].name;
             std::string op2Name = irInst.operands[1].name;
 
-            state.mark32Bit(irInst.resultName);
+            // 32-bit tracking now in StackFrame
 
             // Get stack locations
-            std::string op1Stack = state.getPhysReg(op1Name);
-            std::string op2Stack = state.getPhysReg(op2Name);
+            std::string op1Stack = state.frame.getPhysReg(op1Name);
+            std::string op2Stack = state.frame.getPhysReg(op2Name);
 
             // Allocate result stack space
-            std::string resultStack = state.getPhysReg(irInst.resultName);
+            std::string resultStack = state.frame.getPhysReg(irInst.resultName);
             if (resultStack.find("bp") == std::string::npos) {
-                state.currentStackOffset -= 4;
-                state.tempSpaceInBlock += 4;   // track temp space for cleanup
-                int stackOffset = state.currentStackOffset;
-                state.vregToStackOffset[irInst.resultName] = stackOffset;
-                resultStack = "bp" + std::to_string(stackOffset);
-                Instruction286 subSp;
-                subSp.mnemonic = "sub";
-                subSp.operands.push_back("sp");
-                subSp.operands.push_back("4");
-                lowered.instructions.push_back(subSp);
+                // Stack space pre-allocated in prologue
+                resultStack = state.frame.allocTemp(4, true);
             }
 
             // Load op1 into AX:BX
@@ -560,15 +517,16 @@ std::vector<LoweredInstruction> lowerMul(SelectorState& state,
             }
             lowered.instructions.push_back(loadOp2High);
 
-            // Call multiplication routine
+            // Call multiplication routine (far call to runtime)
             // Result will be in DI:SI
             Instruction286 callMul;
             callMul.mnemonic = "call";
             callMul.operands.push_back("far _MultiplyI32");
             lowered.instructions.push_back(callMul);
 
-        // Store result to stack
-            // _MultiplyI32 returns: si = high word (MSB), di = low word (LSB)
+       // Store result to stack
+            // _MultiplyI32 returns: di = low word (LSB), si = high word (MSB)
+            // (di gets adc di,ax where ax is low word; si gets add si,bx where bx is high word)
             Instruction286 storeResultLow;
             storeResultLow.mnemonic = "mov";
             storeResultLow.operands.push_back("[" + resultStack + "]");
@@ -577,23 +535,14 @@ std::vector<LoweredInstruction> lowerMul(SelectorState& state,
 
             Instruction286 storeResultHigh;
             storeResultHigh.mnemonic = "mov";
-            if (resultStack.find("bp") != std::string::npos) {
-                int offset = 0;
-                std::string offsetStr = resultStack.substr(2);
-                if (!offsetStr.empty()) {
-                    try { offset = std::stoi(offsetStr); } catch (...) {}
-                }
-                int newOffset = offset + 2;
-                std::string offsetStr2 = (newOffset >= 0) ? ("+" + std::to_string(newOffset)) : std::to_string(newOffset);
-                storeResultHigh.operands.push_back("[" + std::string("bp") + offsetStr2 + "]");
-            } else {
-                storeResultHigh.operands.push_back("[" + resultStack + "+2]");
-            }
+            std::string highOffset = state.frame.getHighBpOffset(resultStack);
+            storeResultHigh.operands.push_back("[" + highOffset + "]");
             storeResultHigh.operands.push_back("si");
             lowered.instructions.push_back(storeResultHigh);
 
             // Update vreg mapping
-            state.vregToPhys[irInst.resultName] = resultStack;
+            state.frame.setPhysReg(irInst.resultName, resultStack);
+            
         }
     } else {
         // 16-bit multiplication
@@ -601,8 +550,8 @@ std::vector<LoweredInstruction> lowerMul(SelectorState& state,
         imulInst.mnemonic = "imul";
 
         if (irInst.operands.size() >= 2) {
-            std::string op1 = state.getPhysReg(irInst.operands[0].name);
-            std::string op2 = state.getPhysReg(irInst.operands[1].name);
+            std::string op1 = state.frame.getPhysReg(irInst.operands[0].name);
+            std::string op2 = state.frame.getPhysReg(irInst.operands[1].name);
 
             // Move first operand to AX
             if (op1 != "ax") {
@@ -632,7 +581,7 @@ std::vector<LoweredInstruction> lowerMul(SelectorState& state,
 
         // Update register mapping - mul writes to AX (low word)
         if (!irInst.resultName.empty()) {
-            state.updateResultReg(irInst.resultName, "ax");
+            state.frame.setPhysReg(irInst.resultName, "ax");
         }
     }
 
@@ -664,7 +613,8 @@ std::vector<LoweredInstruction> lowerDivRem(SelectorState& state,
 
             // Load dividend low word to AX, high word to BX
             // load32Bit loads to AX:DX, so we need to move DX to BX
-            auto dividendLoads = state.load32Bit(dividentName);
+            std::vector<Instruction286> dividendLoads;
+            state.frame.emitLoad32(dividendLoads, dividentName, "ax", "dx");
             lowered.instructions.insert(lowered.instructions.end(), dividendLoads.begin(), dividendLoads.end());
 
             // Move dividend low word from AX to... wait, load32Bit loads to AX:DX
@@ -676,7 +626,7 @@ std::vector<LoweredInstruction> lowerDivRem(SelectorState& state,
             lowered.instructions.push_back(movDivHigh);
 
             // Load divisor low word to CX, high word to DX
-            std::string divisorReg = state.getPhysReg(divisorName);
+            std::string divisorReg = state.frame.getPhysReg(divisorName);
             if (divisorReg.find("bp") != std::string::npos) {
                 Instruction286 loadDivisorLow;
                 loadDivisorLow.mnemonic = "mov";
@@ -722,7 +672,7 @@ std::vector<LoweredInstruction> lowerDivRem(SelectorState& state,
             // Division (SDiv/UDiv): DI:SI (DI=high, SI=low) = quotient
             // Remainder (SRem/URem): BX:AX (BX=high, AX=low) = remainder
             if (!irInst.resultName.empty()) {
-                std::string resultStack = state.alloc32BitStack(irInst.resultName);
+                std::string resultStack = state.frame.allocTemp(4, true);
                 bool isRemainder = (irInst.opcode == ir::Opcode::SRem || irInst.opcode == ir::Opcode::URem);
 
                 if (isRemainder) {
@@ -736,18 +686,8 @@ std::vector<LoweredInstruction> lowerDivRem(SelectorState& state,
                     // Store BX (high word of remainder)
                     Instruction286 storeResultHigh;
                     storeResultHigh.mnemonic = "mov";
-                    if (resultStack.find("bp") != std::string::npos) {
-                        int offset = 0;
-                        std::string offsetStr = resultStack.substr(2);
-                        if (!offsetStr.empty()) {
-                            try { offset = std::stoi(offsetStr); } catch (...) {}
-                        }
-                        int newOffset = offset + 2;
-                        std::string offsetStr2 = (newOffset >= 0) ? ("+" + std::to_string(newOffset)) : std::to_string(newOffset);
-                        storeResultHigh.operands.push_back("[" + std::string("bp") + offsetStr2 + "]");
-                    } else {
-                        storeResultHigh.operands.push_back("[" + resultStack + "+2]");
-                    }
+                    std::string highOffset = state.frame.getHighBpOffset(resultStack);
+                    storeResultHigh.operands.push_back("[" + highOffset + "]");
                     storeResultHigh.operands.push_back("bx");
                     lowered.instructions.push_back(storeResultHigh);
                 } else {
@@ -762,28 +702,18 @@ std::vector<LoweredInstruction> lowerDivRem(SelectorState& state,
                     // Store SI (high word of quotient)
                     Instruction286 storeResultHigh;
                     storeResultHigh.mnemonic = "mov";
-                    if (resultStack.find("bp") != std::string::npos) {
-                        int offset = 0;
-                        std::string offsetStr = resultStack.substr(2);
-                        if (!offsetStr.empty()) {
-                            try { offset = std::stoi(offsetStr); } catch (...) {}
-                        }
-                        int newOffset = offset + 2;
-                        std::string offsetStr2 = (newOffset >= 0) ? ("+" + std::to_string(newOffset)) : std::to_string(newOffset);
-                        storeResultHigh.operands.push_back("[" + std::string("bp") + offsetStr2 + "]");
-                    } else {
-                        storeResultHigh.operands.push_back("[" + resultStack + "+2]");
-                    }
+                    std::string highOffset = state.frame.getHighBpOffset(resultStack);
+                    storeResultHigh.operands.push_back("[" + highOffset + "]");
                     storeResultHigh.operands.push_back("si");
                     lowered.instructions.push_back(storeResultHigh);
                 }
 
-                state.vregToPhys[irInst.resultName] = resultStack;
+                
             }
         } else {
             // 16-bit division
             // Load dividend to AX
-            std::string dividentReg = state.getPhysReg(dividentName);
+            std::string dividentReg = state.frame.getPhysReg(dividentName);
             if (dividentReg.find("bp") != std::string::npos) {
                 Instruction286 loadDividend;
                 loadDividend.mnemonic = "mov";
@@ -799,7 +729,7 @@ std::vector<LoweredInstruction> lowerDivRem(SelectorState& state,
             }
 
             // Load divisor to CX
-            std::string divisorReg = state.getPhysReg(divisorName);
+            std::string divisorReg = state.frame.getPhysReg(divisorName);
             if (divisorReg.find("bp") != std::string::npos) {
                 Instruction286 loadDivisor;
                 loadDivisor.mnemonic = "mov";
@@ -838,7 +768,7 @@ std::vector<LoweredInstruction> lowerDivRem(SelectorState& state,
             std::string divResultReg = (irInst.opcode == ir::Opcode::SDiv || irInst.opcode == ir::Opcode::UDiv) ? "ax" : "dx";
 
             if (!irInst.resultName.empty()) {
-                state.updateResultReg(irInst.resultName, divResultReg);
+                state.frame.setPhysReg(irInst.resultName, divResultReg);
             }
         }
     }

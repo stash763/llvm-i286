@@ -26,8 +26,9 @@ public:
     std::string emitLoweredInstruction(const LoweredInstruction& lowered);
     
     // Emit a complete function
-    std::string emitFunction(const std::vector<LoweredInstruction>& instructions,
-                            const std::string& funcName);
+   std::string emitFunction(const std::vector<LoweredInstruction>& instructions,
+                              const std::string& funcName,
+                              int frameSize = 0);
     
     // Emit complete NASM file with segments
     // entryFuncName: name of function to call from ..start (empty = emit code directly)

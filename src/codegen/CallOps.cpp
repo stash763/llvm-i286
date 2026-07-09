@@ -78,8 +78,8 @@ std::vector<LoweredInstruction> lowerCall(SelectorState& state,
         // Only look up vreg maps if the argument has a % prefix (vreg reference)
         bool argIsVreg = false;
         if (argIsVregRef) {
-            argIsVreg = (state.vregToPhys.find(argName) != state.vregToPhys.end()) ||
-                         (state.vregToStackOffset.find(argName) != state.vregToStackOffset.end());
+            argIsVreg = (state.frame.hasSlot(argName)) ||
+                         (state.frame.hasSlot(argName));
         }
 
         // Check if argument is a constant (not a vreg)
@@ -151,13 +151,13 @@ std::vector<LoweredInstruction> lowerCall(SelectorState& state,
               } else {
                 // Check if this argument is an alloca result (stack offset IS the address)
                 // Use argName (with % prefix) for consistent lookup with other codegen
-                bool argIsAlloca = state.allocaVregs.find(argName) != state.allocaVregs.end();
+                bool argIsAlloca = state.frame.isAlloca(argName);
                   if (argIsAlloca) {
                     // Alloca result: the stack offset IS the pointer value
                     // We need to compute bp + offset at runtime and push that as the address
                     // Push high word = SS selector (for far pointer in OS/2 1.x segmented model)
                     // Push low word = bp + offset (computed at runtime via lea)
-                    std::string argReg = state.getPhysReg(argName);
+                    std::string argReg = state.frame.getPhysReg(argName);
                     int offset = 0;
                     if (argReg.find("bp") != std::string::npos) {
                         std::string offsetStr = argReg.substr(2); // Remove "bp"
@@ -188,7 +188,7 @@ std::vector<LoweredInstruction> lowerCall(SelectorState& state,
                     pushLow.operands.push_back("ax");
                     lowered.instructions.push_back(pushLow);
                 } else {
-                    std::string argReg = state.getPhysReg(vregLookupName);
+                    std::string argReg = state.frame.getPhysReg(vregLookupName);
                     if (argReg.find("bp") != std::string::npos) {
                         // Memory operand (value stored at stack location) - push both words
                         // Compute high word offset properly
@@ -250,7 +250,7 @@ std::vector<LoweredInstruction> lowerCall(SelectorState& state,
                 pushInst.operands.push_back("ax");
                 lowered.instructions.push_back(pushInst);
             } else {
-                std::string argReg = state.getPhysReg(vregLookupName);
+                std::string argReg = state.frame.getPhysReg(vregLookupName);
                 if (argReg.find("bp") != std::string::npos) {
                     // Memory operand - load into AX first
                     Instruction286 loadInst;
@@ -312,10 +312,10 @@ std::vector<LoweredInstruction> lowerCall(SelectorState& state,
         }
         
         if (is32) {
-            state.mark32Bit(irInst.resultName);
+            // 32-bit tracking now in StackFrame
         }
         
-        state.updateResultReg(irInst.resultName, "ax");
+        state.frame.setPhysReg(irInst.resultName, "ax");
     }
 
     loweredVec.push_back(lowered);

@@ -32,20 +32,23 @@ class InstructionSelector {
 public:
     InstructionSelector();
     ~InstructionSelector();
-    
+
     // Set function declarations for parameter type lookup
     void setFunctionDeclarations(const std::map<std::string, std::vector<int>>& decls);
-    
+
     // Set alias map for weak_alias resolution
     void setAliasMap(const std::map<std::string, std::string>& aliases);
-    
+
+    // Get the computed frame size (for prologue emission)
+    int getFrameSize() const;
+
     // Lower an LLVM IR instruction to 286 instruction sequence(s)
     std::vector<LoweredInstruction> lowerInstruction(const ir::Instruction& irInst);
-    
+
     // Lower a basic block
     std::vector<LoweredInstruction> lowerBasicBlock(const ir::BasicBlock& bb);
-    
-    // Lower a function
+
+    // Lower a function (two-pass: analysis + lowering)
     std::vector<LoweredInstruction> lowerFunction(const ir::Function& func);
 
 private:

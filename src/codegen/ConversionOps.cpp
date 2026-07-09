@@ -19,7 +19,7 @@ std::vector<LoweredInstruction> lowerTrunc(SelectorState& state,
     LoweredInstruction lowered;
 
     if (!irInst.operands.empty()) {
-        std::string srcReg = state.getPhysReg(irInst.operands[0].name);
+        std::string srcReg = state.frame.getPhysReg(irInst.operands[0].name);
         std::string destReg = resultReg.empty() ? "ax" : resultReg;
 
         // For now, just move the value (16-bit trunc is no-op on 16-bit target)
@@ -32,7 +32,7 @@ std::vector<LoweredInstruction> lowerTrunc(SelectorState& state,
         }
 
         if (!irInst.resultName.empty()) {
-            state.updateResultReg(irInst.resultName, destReg);
+            state.frame.setPhysReg(irInst.resultName, destReg);
         }
     }
 
@@ -49,7 +49,7 @@ std::vector<LoweredInstruction> lowerZExt(SelectorState& state,
     LoweredInstruction lowered;
 
     if (!irInst.operands.empty()) {
-        std::string srcReg = state.getPhysReg(irInst.operands[0].name);
+        std::string srcReg = state.frame.getPhysReg(irInst.operands[0].name);
         std::string destReg = resultReg.empty() ? "ax" : resultReg;
 
         bool srcIsMem = srcReg.find("bp") != std::string::npos;
@@ -70,10 +70,10 @@ std::vector<LoweredInstruction> lowerZExt(SelectorState& state,
         }
 
         if (!irInst.resultName.empty()) {
-            state.updateResultReg(irInst.resultName, destReg);
+            state.frame.setPhysReg(irInst.resultName, destReg);
         }
 
-        // If extending to 32-bit, zero-extend to DX:AX
+        // If extending to 32-bit, zero-extend to DX:AX and store to temp slot
         if (irInst.resultType && irInst.resultType->bitWidth == 32) {
             // Clear DX for zero extension
             Instruction286 clearDx;
@@ -82,39 +82,26 @@ std::vector<LoweredInstruction> lowerZExt(SelectorState& state,
             clearDx.operands.push_back("dx");
             lowered.instructions.push_back(clearDx);
 
-            // Allocate stack space and store the 32-bit result
-            state.currentStackOffset -= 4;
-            state.tempSpaceInBlock += 4;   // track temp space for cleanup
-            int stackOffset = state.currentStackOffset;
-            state.vregToStackOffset[irInst.resultName] = stackOffset;
-            std::string resultStack = "bp" + std::to_string(stackOffset);
-            state.mark32Bit(irInst.resultName);
+            // Allocate temp slot for 32-bit result (pre-allocated in prologue)
+            std::string resultStack = state.frame.allocTemp(4, true);
 
-            // Emit stack allocation
-            Instruction286 subSp;
-            subSp.mnemonic = "sub";
-            subSp.operands.push_back("sp");
-            subSp.operands.push_back("4");
-            lowered.instructions.push_back(subSp);
-
-            // Store low word (ax)
+            // Store low word (ax) to temp
             Instruction286 storeLow;
             storeLow.mnemonic = "mov";
             storeLow.operands.push_back("[" + resultStack + "]");
             storeLow.operands.push_back("ax");
             lowered.instructions.push_back(storeLow);
 
-            // Store high word (dx = 0)
+            // Store high word (dx=0) to temp+2
             Instruction286 storeHigh;
             storeHigh.mnemonic = "mov";
-            int hNewOffset = stackOffset + 2;
-            std::string hOffsetStr2 = (hNewOffset >= 0) ? ("+" + std::to_string(hNewOffset)) : std::to_string(hNewOffset);
-            storeHigh.operands.push_back("[" + std::string("bp") + hOffsetStr2 + "]");
+            std::string highOffset = state.frame.getHighBpOffset(resultStack);
+            storeHigh.operands.push_back("[" + highOffset + "]");
             storeHigh.operands.push_back("dx");
             lowered.instructions.push_back(storeHigh);
 
             // Update vreg mapping to point to stack
-            state.vregToPhys[irInst.resultName] = resultStack;
+            state.frame.setPhysReg(irInst.resultName, resultStack);
         }
     }
 
@@ -130,7 +117,7 @@ std::vector<LoweredInstruction> lowerSExt(SelectorState& state,
     LoweredInstruction lowered;
 
     if (!irInst.operands.empty()) {
-        std::string srcReg = state.getPhysReg(irInst.operands[0].name);
+        std::string srcReg = state.frame.getPhysReg(irInst.operands[0].name);
         std::string destReg = resultReg.empty() ? "ax" : resultReg;
 
         bool srcIsMem = srcReg.find("bp") != std::string::npos;
@@ -153,28 +140,10 @@ std::vector<LoweredInstruction> lowerSExt(SelectorState& state,
         // Store result to stack slot if it has a name
         if (!irInst.resultName.empty()) {
             // Allocate stack space for the result (32-bit for sign-extended values)
-            state.currentStackOffset -= 4;
-            state.tempSpaceInBlock += 4;   // track temp space for cleanup
-            int stackOffset = state.currentStackOffset;
-            state.vregToStackOffset[irInst.resultName] = stackOffset;
-            std::string resultStack = "bp" + std::to_string(stackOffset);
-            state.mark32Bit(irInst.resultName);
+            // Stack space pre-allocated in prologue
+            std::string resultStack = state.frame.allocTemp(4, true);
 
-            // Emit stack allocation
-            Instruction286 subSp;
-            subSp.mnemonic = "sub";
-            subSp.operands.push_back("sp");
-            subSp.operands.push_back("4");
-            lowered.instructions.push_back(subSp);
-
-            // Store low word (ax)
-            Instruction286 storeLow;
-            storeLow.mnemonic = "mov";
-            storeLow.operands.push_back("[" + resultStack + "]");
-            storeLow.operands.push_back("ax");
-            lowered.instructions.push_back(storeLow);
-
-           // Sign-extend: for 8-bit to 32-bit, use cbw then cwd
+            // Sign-extend: for 8-bit to 32-bit, use cbw then cwd
             // For 16-bit to 32-bit, use cwd
             {
                 // First sign-extend al to ax if source was 8-bit
@@ -188,18 +157,23 @@ std::vector<LoweredInstruction> lowerSExt(SelectorState& state,
                 lowered.instructions.push_back(cwdInst);
             }
 
-            // Store high word (dx)
+            // Store low word (ax)
+            Instruction286 storeLow;
+            storeLow.mnemonic = "mov";
+            storeLow.operands.push_back("[" + resultStack + "]");
+            storeLow.operands.push_back("ax");
+            lowered.instructions.push_back(storeLow);
+
+            // Store high word (dx) - getHighBpOffset already returns full bp-relative string
             Instruction286 storeHigh;
             storeHigh.mnemonic = "mov";
-            int hOffset = stackOffset;
-            int hNewOffset = hOffset + 2;
-            std::string hOffsetStr2 = (hNewOffset >= 0) ? ("+" + std::to_string(hNewOffset)) : std::to_string(hNewOffset);
-            storeHigh.operands.push_back("[" + std::string("bp") + hOffsetStr2 + "]");
+            std::string hOffsetStr = state.frame.getHighBpOffset(resultStack);
+            storeHigh.operands.push_back("[" + hOffsetStr + "]");
             storeHigh.operands.push_back("dx");
             lowered.instructions.push_back(storeHigh);
 
             // Update vreg mapping to point to stack
-            state.vregToPhys[irInst.resultName] = resultStack;
+            state.frame.setPhysReg(irInst.resultName, resultStack);
         }
     }
 
@@ -215,7 +189,7 @@ std::vector<LoweredInstruction> lowerBitCast(SelectorState& state,
     LoweredInstruction lowered;
 
     if (!irInst.operands.empty()) {
-        std::string srcReg = state.getPhysReg(irInst.operands[0].name);
+        std::string srcReg = state.frame.getPhysReg(irInst.operands[0].name);
 
         if (srcReg.find("bp") != std::string::npos) {
             Instruction286 loadInst;
@@ -232,7 +206,7 @@ std::vector<LoweredInstruction> lowerBitCast(SelectorState& state,
         }
 
         if (!irInst.resultName.empty()) {
-            state.updateResultReg(irInst.resultName, "ax");
+            state.frame.setPhysReg(irInst.resultName, "ax");
         }
     }
 
@@ -248,7 +222,7 @@ std::vector<LoweredInstruction> lowerFreeze(SelectorState& state,
     LoweredInstruction lowered;
 
     if (!irInst.operands.empty()) {
-        std::string srcReg = state.getPhysReg(irInst.operands[0].name);
+        std::string srcReg = state.frame.getPhysReg(irInst.operands[0].name);
 
         if (srcReg.find("bp") != std::string::npos) {
             Instruction286 loadInst;
@@ -265,7 +239,7 @@ std::vector<LoweredInstruction> lowerFreeze(SelectorState& state,
         }
 
         if (!irInst.resultName.empty()) {
-            state.updateResultReg(irInst.resultName, "ax");
+            state.frame.setPhysReg(irInst.resultName, "ax");
         }
     }
 
@@ -281,7 +255,7 @@ std::vector<LoweredInstruction> lowerExtractValue(SelectorState& state,
     LoweredInstruction lowered;
 
     if (!irInst.operands.empty()) {
-        std::string aggReg = state.getPhysReg(irInst.operands[0].name);
+        std::string aggReg = state.frame.getPhysReg(irInst.operands[0].name);
 
         // Calculate offset based on indices
         int offset = 0;
@@ -303,7 +277,7 @@ std::vector<LoweredInstruction> lowerExtractValue(SelectorState& state,
         lowered.instructions.push_back(loadInst);
 
         if (!irInst.resultName.empty()) {
-            state.updateResultReg(irInst.resultName, "ax");
+            state.frame.setPhysReg(irInst.resultName, "ax");
         }
     }
 
@@ -318,8 +292,8 @@ std::vector<LoweredInstruction> lowerInsertValue(SelectorState& state,
     LoweredInstruction lowered;
 
     if (irInst.operands.size() >= 2) {
-        std::string aggReg = state.getPhysReg(irInst.operands[0].name);
-        std::string valReg = state.getPhysReg(irInst.operands[1].name);
+        std::string aggReg = state.frame.getPhysReg(irInst.operands[0].name);
+        std::string valReg = state.frame.getPhysReg(irInst.operands[1].name);
 
         // Calculate offset
         int offset = 0;
@@ -354,7 +328,7 @@ std::vector<LoweredInstruction> lowerPtrToInt(SelectorState& state,
     LoweredInstruction lowered;
 
     if (!irInst.operands.empty()) {
-        std::string ptrReg = state.getPhysReg(irInst.operands[0].name);
+        std::string ptrReg = state.frame.getPhysReg(irInst.operands[0].name);
         std::string resultRegName = irInst.resultName;
 
         // Load the pointer value (32-bit) into AX:DX
@@ -398,26 +372,14 @@ std::vector<LoweredInstruction> lowerPtrToInt(SelectorState& state,
         }
 
         // Store result in memory (32-bit value in AX:DX)
-        // Allocate space on stack for the result using proper stack offset tracking
-        state.currentStackOffset -= 4;  // 32-bit = 4 bytes
-        int stackOffset = state.currentStackOffset;
-        
-        // Emit stack allocation
-        Instruction286 subSp;
-        subSp.mnemonic = "sub";
-        subSp.operands.push_back("sp");
-        subSp.operands.push_back("4");
-        lowered.instructions.push_back(subSp);
-
-        // Compute offsets: low word at stackOffset, high word at stackOffset+2
-        std::string lowOffsetStr = (stackOffset >= 0) ? ("bp+" + std::to_string(stackOffset)) : ("bp" + std::to_string(stackOffset));
-        int highOffset = stackOffset + 2;
-        std::string highOffsetStr = (highOffset >= 0) ? ("bp+" + std::to_string(highOffset)) : ("bp" + std::to_string(highOffset));
+        // Allocate space on stack for the result (pre-allocated in prologue)
+        std::string resultStack = state.frame.allocTemp(4, true);
+        std::string highOffsetStr = state.frame.getHighBpOffset(resultStack);
 
         // Store low word
         Instruction286 storeLow;
         storeLow.mnemonic = "mov";
-        storeLow.operands.push_back("[" + lowOffsetStr + "]");
+        storeLow.operands.push_back("[" + resultStack + "]");
         storeLow.operands.push_back("ax");
         lowered.instructions.push_back(storeLow);
 
@@ -428,11 +390,9 @@ std::vector<LoweredInstruction> lowerPtrToInt(SelectorState& state,
         storeHigh.operands.push_back("dx");
         lowered.instructions.push_back(storeHigh);
 
-        // Update state: the result is at stackOffset (low word address)
-        state.vregToStackOffset[resultRegName] = stackOffset;
-        std::string resultStack = lowOffsetStr;
-        state.vregToPhys[resultRegName] = resultStack;
-        state.physToVreg[resultStack] = resultRegName;
+        // Update state: the result is at resultStack
+        state.frame.setPhysReg(irInst.resultName, resultStack);
+        
     }
 
     loweredVec.push_back(lowered);
@@ -448,7 +408,7 @@ std::vector<LoweredInstruction> lowerIntToPtr(SelectorState& state,
     LoweredInstruction lowered;
 
     if (!irInst.operands.empty()) {
-        std::string intReg = state.getPhysReg(irInst.operands[0].name);
+        std::string intReg = state.frame.getPhysReg(irInst.operands[0].name);
         std::string resultRegName = irInst.resultName;
 
         // Load the integer value (32-bit) into AX:DX
@@ -482,26 +442,14 @@ std::vector<LoweredInstruction> lowerIntToPtr(SelectorState& state,
         }
 
         // Store result in memory (32-bit value in AX:DX)
-        // Allocate space on stack for the result using proper stack offset tracking
-        state.currentStackOffset -= 4;  // 32-bit = 4 bytes
-        int stackOffset = state.currentStackOffset;
-        
-        // Emit stack allocation
-        Instruction286 subSp;
-        subSp.mnemonic = "sub";
-        subSp.operands.push_back("sp");
-        subSp.operands.push_back("4");
-        lowered.instructions.push_back(subSp);
-
-        // Compute offsets: low word at stackOffset, high word at stackOffset+2
-        std::string lowOffsetStr = (stackOffset >= 0) ? ("bp+" + std::to_string(stackOffset)) : ("bp" + std::to_string(stackOffset));
-        int highOffset = stackOffset + 2;
-        std::string highOffsetStr = (highOffset >= 0) ? ("bp+" + std::to_string(highOffset)) : ("bp" + std::to_string(highOffset));
+        // Allocate space on stack for the result (pre-allocated in prologue)
+        std::string resultStack = state.frame.allocTemp(4, true);
+        std::string highOffsetStr = state.frame.getHighBpOffset(resultStack);
 
         // Store low word
         Instruction286 storeLow;
         storeLow.mnemonic = "mov";
-        storeLow.operands.push_back("[" + lowOffsetStr + "]");
+        storeLow.operands.push_back("[" + resultStack + "]");
         storeLow.operands.push_back("ax");
         lowered.instructions.push_back(storeLow);
 
@@ -512,11 +460,9 @@ std::vector<LoweredInstruction> lowerIntToPtr(SelectorState& state,
         storeHigh.operands.push_back("dx");
         lowered.instructions.push_back(storeHigh);
 
-        // Update state: the result is at stackOffset (low word address)
-        state.vregToStackOffset[resultRegName] = stackOffset;
-        std::string resultStack = lowOffsetStr;
-        state.vregToPhys[resultRegName] = resultStack;
-        state.physToVreg[resultStack] = resultRegName;
+        // Update state: the result is at resultStack
+        state.frame.setPhysReg(irInst.resultName, resultStack);
+        
     }
 
     loweredVec.push_back(lowered);
