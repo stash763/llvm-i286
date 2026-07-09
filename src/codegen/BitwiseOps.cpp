@@ -94,7 +94,7 @@ static std::vector<LoweredInstruction> lowerBinaryOp(
             // Stack space pre-allocated in prologue
             std::string tempSlot = state.frame.allocTemp(4, true);
             std::string lowStack = tempSlot;
-            std::string highStack = state.frame.getHighBpOffset(irInst.resultName);
+            std::string highStack = state.frame.getHighBpOffset(tempSlot);
             
             // Store low word (AX)
             Instruction286 storeLow;
@@ -110,7 +110,8 @@ static std::vector<LoweredInstruction> lowerBinaryOp(
             storeHigh.operands.push_back("dx");
             lowered.instructions.push_back(storeHigh);
             
-            // 32-bit tracking now in StackFrame
+            // Update vreg mapping to point to stack slot
+            state.frame.setPhysReg(irInst.resultName, tempSlot);
             
         } else {
             state.frame.setPhysReg(irInst.resultName, destReg);

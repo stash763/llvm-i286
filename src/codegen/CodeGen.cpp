@@ -107,7 +107,9 @@ std::string CodeGen::generate(const ir::Module& module) {
         }
         
         // Check if this is an uninitialized global (BSS)
-        bool isBSS = !gv->initializer || (gv->initializer && gv->initializer->kind == ir::ValueKind::ConstantZeroInitializer);
+        bool isBSS = !gv->initializer || 
+                     (gv->initializer && (gv->initializer->kind == ir::ValueKind::ConstantZeroInitializer || 
+                                          gv->initializer->kind == ir::ValueKind::ConstantNull));
         
         if (isBSS) {
             // BSS segment: uninitialized data
@@ -206,6 +208,15 @@ std::string CodeGen::generate(const ir::Module& module) {
                 
                 std::string initValue = gv->initializer->text;
                 
+                // Strip @ prefix from global references for NASM compatibility
+                if (!initValue.empty() && initValue[0] == '@') {
+                    initValue = initValue.substr(1);
+                }
+                // Also strip leading '.' and add '_' for NASM compatibility
+                if (!initValue.empty() && initValue[0] == '.') {
+                    initValue = "_" + initValue.substr(1);
+                }
+                
                 dataSegment += dataLabel + ":\n";
                 if (byteSize == 4) {
                     dataSegment += "\tdd " + initValue + "\n\n"; // 32-bit dword
@@ -215,23 +226,51 @@ std::string CodeGen::generate(const ir::Module& module) {
             }
         } else if (gv->initializer) {
             // Initialized non-constant global (data segment)
-            int byteSize = 2;
-            if (gv->type) {
-                if (gv->type->isInteger()) {
-                    byteSize = gv->type->bitWidth / 8;
-                    if (byteSize < 2) byteSize = 2;
-                } else if (gv->type->isPointer()) {
-                    byteSize = 4;
+            // Check if initializer is null or zero (should go in BSS)
+            if (gv->initializer->kind == ir::ValueKind::ConstantNull || 
+                gv->initializer->kind == ir::ValueKind::ConstantZeroInitializer) {
+                // Treat as BSS (uninitialized)
+                int byteSize = 2;
+                if (gv->type) {
+                    if (gv->type->isInteger()) {
+                        byteSize = gv->type->bitWidth / 8;
+                        if (byteSize < 2) byteSize = 2;
+                    } else if (gv->type->isPointer()) {
+                        byteSize = 4;
+                    }
                 }
-            }
-            
-            std::string initValue = gv->initializer->text;
-            
-            dataSegment += dataLabel + ":\n";
-            if (byteSize == 4) {
-                dataSegment += "\tdd " + initValue + "\n\n";
+                
+                bssSegment += dataLabel + ":\n";
+                bssSegment += "\tresb " + std::to_string(byteSize) + "\n\n";
             } else {
-                dataSegment += "\tdw " + initValue + "\n\n";
+                int byteSize = 2;
+                if (gv->type) {
+                    if (gv->type->isInteger()) {
+                        byteSize = gv->type->bitWidth / 8;
+                        if (byteSize < 2) byteSize = 2;
+                    } else if (gv->type->isPointer()) {
+                        byteSize = 4;
+                    }
+                }
+                
+                std::string initValue = gv->initializer->text;
+                
+                // Strip @ prefix from global references for NASM compatibility
+                // Always do this check regardless of kind
+                if (!initValue.empty() && initValue[0] == '@') {
+                    initValue = initValue.substr(1);
+                }
+                // Also strip leading '.' and add '_' for NASM compatibility
+                if (!initValue.empty() && initValue[0] == '.') {
+                    initValue = "_" + initValue.substr(1);
+                }
+                
+                dataSegment += dataLabel + ":\n";
+                if (byteSize == 4) {
+                    dataSegment += "\tdd " + initValue + "\n\n";
+                } else {
+                    dataSegment += "\tdw " + initValue + "\n\n";
+                }
             }
         }
     }

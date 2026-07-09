@@ -80,17 +80,18 @@ EXPECTED_OUTPUT[test_ptrtoint]="42"
 EXPECTED_OUTPUT[test_strlen]="5"
 EXPECTED_OUTPUT[test_strcmp]="0"
 EXPECTED_OUTPUT[test_memcmp]="0"
+EXPECTED_OUTPUT[test_isalpha]="1"
+EXPECTED_OUTPUT[test_mul_print]="32"
 
 # Tests that use unsupported features (expected to fail at compile or link time)
 declare -A EXPECTED_FAILURES
 EXPECTED_FAILURES[test_printf]=1
 EXPECTED_FAILURES[test_printf_simple]=1
-EXPECTED_FAILURES[test_mul_print]=1
-EXPECTED_FAILURES[test_isalpha]=1
 
 # Test counters
 PASS=0
 FAIL=0
+SKIP=0
 TOTAL=0
 
 run_test() {
@@ -122,7 +123,7 @@ run_test() {
     if [ $compile_rc -ne 0 ]; then
         if [ "${EXPECTED_FAILURES[$test_name]:-0}" = "1" ]; then
             echo -e "${YELLOW}SKIP (known limitation)${NC}"
-            PASS=$((PASS + 1))
+            SKIP=$((SKIP + 1))
         else
             echo -e "${RED}FAIL (compile)${NC}"
             echo "  Compile error: $compile_log" >&2
@@ -175,10 +176,11 @@ echo "=== Results ==="
 echo "Total: $TOTAL"
 echo -e "Pass: ${GREEN}$PASS${NC}"
 echo -e "Fail: ${RED}$FAIL${NC}"
+echo -e "Skip: ${YELLOW}$SKIP${NC}"
 echo ""
 
 if [ $FAIL -eq 0 ]; then
-    echo "All tests passed!"
+    echo "All non-skipped tests passed!"
     exit 0
 else
     echo "Some tests failed."

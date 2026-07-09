@@ -70,11 +70,70 @@ std::unique_ptr<Module> IrVisitor::visitModule(LLVMIRParser::CompilationUnitCont
                 gv->isConstant = true;
             }
             
-            // Get initializer text (use raw text of the constant)
+            // Get initializer text and kind (for constant globals)
             if (globalDef->constant()) {
                 auto *constant = globalDef->constant();
                 gv->initializer = std::make_unique<ir::Value>();
                 gv->initializer->text = constant->getText();
+                
+                // Determine the kind of constant
+                if (constant->nullConst()) {
+                    gv->initializer->kind = ir::ValueKind::ConstantNull;
+                } else if (constant->zeroInitializerConst()) {
+                    gv->initializer->kind = ir::ValueKind::ConstantZeroInitializer;
+                } else if (constant->undefConst()) {
+                    gv->initializer->kind = ir::ValueKind::ConstantUndef;
+                } else if (constant->GlobalIdent()) {
+                    gv->initializer->kind = ir::ValueKind::GlobalReference;
+                } else {
+                    gv->initializer->kind = ir::ValueKind::ConstantInt;
+                }
+            }
+            
+            currentModule->globals.push_back(std::move(gv));
+        } else if (entity->globalDecl()) {
+            // Non-constant global declaration (e.g., "@x = global ptr @foo")
+            auto *globalDecl = entity->globalDecl();
+            auto gv = std::make_unique<ir::GlobalVariable>();
+            
+            // Get global variable name
+            if (globalDecl->GlobalIdent()) {
+                std::string name = globalDecl->GlobalIdent()->getText();
+                if (!name.empty() && name[0] == '@') name = name.substr(1);
+                gv->name = name;
+            }
+            
+            // Get type
+            if (globalDecl->type()) {
+                gv->type = parseType(globalDecl->type());
+            }
+            
+            // Non-constant globals are not constants
+            gv->isConstant = false;
+            
+            // Try to extract initializer from the text
+            // The text looks like: "@__stdout_used = hidden global ptr @stdout_file, align 4"
+            // We need to extract "@stdout_file"
+            {
+                std::string declText = globalDecl->getText();
+                // Find the pattern " @identifier" which is the initializer
+                // Look for "@" that comes after the type declaration
+                // Simple approach: find last "@@" in the text
+                size_t atPos = declText.rfind('@');
+                if (atPos != std::string::npos && atPos > 0) {
+                    // Extract from @ to end, stopping at comma or space
+                    std::string ident;
+                    for (size_t i = atPos; i < declText.size(); i++) {
+                        char c = declText[i];
+                        if (c == ',' || c == ' ' || c == ')' || c == ']' || c == '\n' || c == '\r') break;
+                        ident += c;
+                    }
+                    if (ident.size() > 1) { // Should be at least "@x"
+                        gv->initializer = std::make_unique<ir::Value>();
+                        gv->initializer->text = ident;
+                        gv->initializer->kind = ir::ValueKind::GlobalReference;
+                    }
+                }
             }
             
             currentModule->globals.push_back(std::move(gv));
