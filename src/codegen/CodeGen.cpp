@@ -67,15 +67,18 @@ std::string CodeGen::generate(const ir::Module& module) {
     std::vector<std::string> externFuncs;
     for (const auto& func : module.functions) {
         if (func->isDeclaration) {
-            // printf is not available in the runtime library
-            if (func->name == "printf") {
-                continue;
+            // LLVM intrinsics are lowered to runtime calls
+            // Rename llvm.memcpy -> memcpy, llvm.va_start -> llvm_va_start, llvm.va_end -> llvm_va_end
+            std::string funcName = func->name;
+            if (funcName.find("llvm.memcpy") != std::string::npos) {
+                continue; // Skip llvm.memcpy entirely
             }
-            // LLVM intrinsics are lowered to runtime calls, not extern
-            if (func->name.find("llvm.memcpy") != std::string::npos) {
-                continue;
+            if (funcName == "llvm.va_start") {
+                funcName = "llvm_va_start";
+            } else if (funcName == "llvm.va_end") {
+                funcName = "llvm_va_end";
             }
-            externFuncs.push_back(func->name);
+            externFuncs.push_back(funcName);
         }
     }
     

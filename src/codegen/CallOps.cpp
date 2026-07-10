@@ -32,6 +32,18 @@ std::vector<LoweredInstruction> lowerCall(SelectorState& state,
         callee = "memcpy";
     }
     
+    // Lower llvm.va_start to llvm_va_start
+    bool isLLVAVaStart = (callee == "llvm.va_start");
+    if (isLLVAVaStart) {
+        callee = "llvm_va_start";
+    }
+    
+    // Lower llvm.va_end to llvm_va_end
+    bool isLLVAVaEnd = (callee == "llvm.va_end");
+    if (isLLVAVaEnd) {
+        callee = "llvm_va_end";
+    }
+    
     // Resolve alias: if callee is an alias, use the target function
     auto aliasIt = state.aliasMap.find(callee);
     if (aliasIt != state.aliasMap.end()) {
