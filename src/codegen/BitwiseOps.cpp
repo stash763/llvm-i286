@@ -38,10 +38,14 @@ static std::vector<LoweredInstruction> lowerBinaryOp(
 
         // Check if operands are constants (only if not vregs)
         bool op2IsConst = !op2IsVreg && isConstantInt(op2Name);
+        bool op2IsMem = false;
 
         op1IsConst = !op1IsVreg && isConstantInt(op1Name);
         op1 = op1IsConst ? op1Name : state.frame.getPhysReg(op1Name);
         std::string op2 = op2IsConst ? op2Name : state.frame.getPhysReg(op2Name);
+
+        // Check if op2 is a memory operand
+        op2IsMem = !op2IsConst && op2.find("bp") != std::string::npos;
 
         // If op1 is a memory operand, we need to load it to a register first
         op1IsMem = !op1IsConst && op1.find("bp") != std::string::npos;
@@ -57,7 +61,12 @@ static std::vector<LoweredInstruction> lowerBinaryOp(
         }
 
         inst.operands.push_back(destReg);
-        inst.operands.push_back(op2);
+        // If op2 is memory, wrap in brackets
+        if (op2IsMem) {
+            inst.operands.push_back("[" + op2 + "]");
+        } else {
+            inst.operands.push_back(op2);
+        }
 
         if (destReg != op1) {
             Instruction286 movInst;
@@ -158,13 +167,21 @@ static std::vector<LoweredInstruction> lowerShiftOp(
         op1 = op1IsConst ? op1Name : state.frame.getPhysReg(op1Name);
         op2 = op2IsConst ? op2Name : state.frame.getPhysReg(op2Name);
 
+        // Check if op2 is a memory operand
+        bool op2IsMem = !op2IsConst && op2.find("bp") != std::string::npos;
+
         // Shift count must be in CL for variable shifts, or immediate
         if (!op2IsConst && op2 != "cl" && op2 != "cx") {
             // Move shift count to CL
             Instruction286 movCL;
             movCL.mnemonic = "mov";
             movCL.operands.push_back("cl");
-            movCL.operands.push_back(op2);
+            // If op2 is memory, wrap in brackets
+            if (op2IsMem) {
+                movCL.operands.push_back("[" + op2 + "]");
+            } else {
+                movCL.operands.push_back(op2);
+            }
             lowered.instructions.push_back(movCL);
             op2 = "cl";
         }
