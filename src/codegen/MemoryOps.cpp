@@ -37,6 +37,24 @@ std::vector<LoweredInstruction> lowerStore(SelectorState& state,
     // Operands: [0] = value to store, [1] = pointer to store to
     if (irInst.operands.size() >= 2) {
         std::string valName = irInst.operands[0].name;
+        
+        // Detect floating-point constants (e.g., "1.000000e+00", "0xK403F...", "0xK3FFE...")
+        // These are not supported for direct store - skip them
+        bool isFPConstant = valName.find("0xK") != std::string::npos ||
+                            (valName.find('e') != std::string::npos && 
+                             (valName.find('+') != std::string::npos || valName.find('-') != std::string::npos)) ||
+                            valName.find("0x") == 0;
+        if (isFPConstant && valName.find("0xK") == std::string::npos && valName.find("0x") == 0) {
+            // Regular hex integer constant (like 0x1234), not FP - don't skip
+            isFPConstant = false;
+        }
+        if (isFPConstant) {
+            // Skip FP constant stores - the destination retains whatever value was there
+            LoweredInstruction lowered;
+            loweredVec.push_back(lowered);
+            return loweredVec;
+        }
+        
         std::string ptrName = irInst.operands[1].name;
         std::string ptrReg = state.frame.getPhysReg(ptrName);
 
@@ -534,7 +552,7 @@ std::vector<LoweredInstruction> lowerLoad(SelectorState& state,
                     destReg = state.frame.getPhysReg(irInst.resultName);
                 }
 
-             // For non-alloca pointers, load the address to BX for dereferencing
+            // For non-alloca pointers, load the address to BX for dereferencing
                 // In OS/2 1.x segmented memory model, far pointers have (selector:offset)
                 // If selector is 0, use [bx] with DS (assumes DS=DGROUP)
                 // If selector is non-zero, load ES with selector and use es:[bx]
@@ -542,7 +560,13 @@ std::vector<LoweredInstruction> lowerLoad(SelectorState& state,
                     Instruction286 loadAddr;
                     loadAddr.mnemonic = "mov";
                     loadAddr.operands.push_back("bx");
-                    loadAddr.operands.push_back("[" + ptrReg + "]");
+                    // In 16-bit mode, only bx/si/di/bp can be base registers.
+                    // If ptrReg is ax/cx/dx, move it to bx first instead of trying to dereference it.
+                    if (ptrReg == "ax" || ptrReg == "cx" || ptrReg == "dx") {
+                        loadAddr.operands.push_back(ptrReg);
+                    } else {
+                        loadAddr.operands.push_back("[" + ptrReg + "]");
+                    }
                     lowered.instructions.push_back(loadAddr);
 
                     // For now, assume DS=DGROUP and just use [bx]
@@ -655,8 +679,81 @@ std::vector<LoweredInstruction> lowerLoad(SelectorState& state,
                     }
                 }
             }
+        } else {
+            // Pointer is in a register (not bp-relative)
+            // Need to dereference it by moving to bx first
+            if (is32) {
+                // Move pointer to bx
+                Instruction286 movPtr;
+                movPtr.mnemonic = "mov";
+                movPtr.operands.push_back("bx");
+                movPtr.operands.push_back(ptrReg);
+                lowered.instructions.push_back(movPtr);
+                
+                // Load low word from [bx]
+                Instruction286 loadLow;
+                loadLow.mnemonic = "mov";
+                loadLow.operands.push_back("ax");
+                loadLow.operands.push_back("[bx]");
+                lowered.instructions.push_back(loadLow);
+                
+                // Load high word from [bx+2]
+                Instruction286 loadHigh;
+                loadHigh.mnemonic = "mov";
+                loadHigh.operands.push_back("dx");
+                loadHigh.operands.push_back("[bx+2]");
+                lowered.instructions.push_back(loadHigh);
+                
+                // Store to result stack location
+                std::string resultStack = state.frame.getPhysReg(irInst.resultName);
+                if (resultStack == "ax" || resultStack == "bx" || resultStack == "cx" || resultStack == "dx") {
+                    resultStack = state.frame.allocTemp(4, true);
+                }
+                Instruction286 storeLow;
+                storeLow.mnemonic = "mov";
+                storeLow.operands.push_back("[" + resultStack + "]");
+                storeLow.operands.push_back("ax");
+                lowered.instructions.push_back(storeLow);
+                
+                std::string highOffset = state.frame.getHighBpOffset(resultStack);
+                Instruction286 storeHigh;
+                storeHigh.mnemonic = "mov";
+                storeHigh.operands.push_back("[" + highOffset + "]");
+                storeHigh.operands.push_back("dx");
+                lowered.instructions.push_back(storeHigh);
+                
+                state.frame.setPhysReg(irInst.resultName, resultStack);
+            } else {
+                // 16-bit or 8-bit load from pointer in register
+                bool is8 = irInst.resultType && irInst.resultType->bitWidth == 8;
+                
+                // Move pointer to bx
+                Instruction286 movPtr;
+                movPtr.mnemonic = "mov";
+                movPtr.operands.push_back("bx");
+                movPtr.operands.push_back(ptrReg);
+                lowered.instructions.push_back(movPtr);
+                
+                std::string destReg;
+                if (is8) {
+                    destReg = "ax";
+                    state.frame.setPhysReg(irInst.resultName, "ax");
+                } else {
+                    destReg = state.frame.getFreeTempReg();
+                    state.frame.setPhysReg(irInst.resultName, destReg);
+                }
+                
+                Instruction286 loadInst;
+                loadInst.mnemonic = "mov";
+                loadInst.operands.push_back(destReg);
+                if (is8) {
+                    loadInst.operands.push_back("byte [bx]");
+                } else {
+                    loadInst.operands.push_back("[bx]");
+                }
+                lowered.instructions.push_back(loadInst);
+            }
         }
-        // else: loading from a register, no-op (value is already there)
     }
 
     loweredVec.push_back(lowered);

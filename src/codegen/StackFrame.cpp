@@ -393,6 +393,18 @@ void StackFrame::emitLoad32(std::vector<Instruction286>& output,
                              const std::string& lowReg,
                              const std::string& highReg) const {
     std::string bpOffset = getBpOffset(vregName);
+    bool isReg = (bpOffset == "ax" || bpOffset == "cx" || bpOffset == "dx" || bpOffset == "bx");
+
+    // If the value is in a register, move it to bx for dereferencing
+    // In 16-bit mode, only bx/si/di/bp can be base registers for memory addressing
+    if (isReg && bpOffset != "bx") {
+        Instruction286 movToBx;
+        movToBx.mnemonic = "mov";
+        movToBx.operands.push_back("bx");
+        movToBx.operands.push_back(bpOffset);
+        output.push_back(movToBx);
+        bpOffset = "bx";
+    }
 
     // Load low word
     Instruction286 loadLow;

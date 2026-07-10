@@ -122,7 +122,7 @@ std::unique_ptr<Module> IrVisitor::visitModule(LLVMIRParser::CompilationUnitCont
             
             currentModule->globals.push_back(std::move(gv));
         } else if (entity->globalDecl()) {
-            // Non-constant global declaration (e.g., "@x = global ptr @foo")
+            // Non-constant global declaration (e.g., "@x = external constant ptr @foo")
             auto *globalDecl = entity->globalDecl();
             auto gv = std::make_unique<ir::GlobalVariable>();
             
@@ -138,8 +138,16 @@ std::unique_ptr<Module> IrVisitor::visitModule(LLVMIRParser::CompilationUnitCont
                 gv->type = parseType(globalDecl->type());
             }
             
-            // Non-constant globals are not constants
-            gv->isConstant = false;
+            // Global declarations with externalLinkage are external
+            gv->linkage = "external";
+            
+            // Check if the raw text contains "constant" keyword
+            // (grammar doesn't have constant in globalDecl, but ANTLR error recovery
+            //  allows parsing "@x = external constant ptr" through globalDecl)
+            {
+                std::string declText = globalDecl->getText();
+                gv->isConstant = declText.find(" constant ") != std::string::npos;
+            }
             
             // Try to extract initializer from the text
             // The text looks like: "@__stdout_used = hidden global ptr @stdout_file, align 4"

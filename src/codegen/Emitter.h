@@ -37,7 +37,8 @@ public:
                           const std::string& dataSegment,
                           const std::string& bssSegment,
                           const std::string& entryFuncName = "",
-                          const std::vector<std::string>& externFuncs = std::vector<std::string>());
+                          const std::vector<std::string>& externFuncs = std::vector<std::string>(),
+                          const std::vector<std::string>& externGlobals = std::vector<std::string>());
     
     // Get the output stream for building up output
     std::stringstream& getStream() { return output; }

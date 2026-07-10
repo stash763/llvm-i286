@@ -79,6 +79,14 @@ std::string CodeGen::generate(const ir::Module& module) {
         }
     }
     
+    // Collect external global declarations (declared but not defined in this module)
+    std::vector<std::string> externGlobals;
+    for (const auto& gv : module.globals) {
+        if (gv->linkage == "external") {
+            externGlobals.push_back(gv->name);
+        }
+    }
+    
     // Note: Runtime library functions are added below after globals processing
     
     // Generate code for each function
@@ -99,6 +107,9 @@ std::string CodeGen::generate(const ir::Module& module) {
     std::string bssSegment;
     
     for (const auto& gv : module.globals) {
+        // Skip external globals - they are declared elsewhere and linked in
+        if (gv->linkage == "external") continue;
+        
         std::string dataLabel = gv->name;
         // NASM treats labels starting with '.' as local labels
         // Prefix with '_' to make them global
@@ -198,30 +209,44 @@ std::string CodeGen::generate(const ir::Module& module) {
                 dataSegment += "\tdb " + parts + ", 0\n\n";
             } else {
                 // Other initialized constants (integers, etc.)
+                // Check for complex LLVM IR initializers we can't handle directly
+                // (structs, arrays, concatenated strings, zeroinitializer, etc.)
+                std::string initValue = gv->initializer->text;
+                bool isComplex = initValue.find("<{") != std::string::npos ||
+                                 initValue.find("zeroinitializer") != std::string::npos ||
+                                 initValue.find("undef") != std::string::npos ||
+                                 initValue.find("[") != std::string::npos;
+                
                 int byteSize = 2; // Default to 2 bytes
                 if (gv->type) {
                     if (gv->type->isInteger()) {
                         byteSize = gv->type->bitWidth / 8;
                         if (byteSize < 2) byteSize = 2;
+                    } else if (gv->type->isPointer()) {
+                        byteSize = 4;
                     }
                 }
                 
-                std::string initValue = gv->initializer->text;
-                
-                // Strip @ prefix from global references for NASM compatibility
-                if (!initValue.empty() && initValue[0] == '@') {
-                    initValue = initValue.substr(1);
-                }
-                // Also strip leading '.' and add '_' for NASM compatibility
-                if (!initValue.empty() && initValue[0] == '.') {
-                    initValue = "_" + initValue.substr(1);
-                }
-                
-                dataSegment += dataLabel + ":\n";
-                if (byteSize == 4) {
-                    dataSegment += "\tdd " + initValue + "\n\n"; // 32-bit dword
+                if (isComplex) {
+                    // Complex initializer: emit as zero-initialized BSS data
+                    bssSegment += dataLabel + ":\n";
+                    bssSegment += "\tresb " + std::to_string(byteSize) + "\n\n";
                 } else {
-                    dataSegment += "\tdw " + initValue + "\n\n"; // 16-bit word
+                    // Strip @ prefix from global references for NASM compatibility
+                    if (!initValue.empty() && initValue[0] == '@') {
+                        initValue = initValue.substr(1);
+                    }
+                    // Also strip leading '.' and add '_' for NASM compatibility
+                    if (!initValue.empty() && initValue[0] == '.') {
+                        initValue = "_" + initValue.substr(1);
+                    }
+                    
+                    dataSegment += dataLabel + ":\n";
+                    if (byteSize == 4) {
+                        dataSegment += "\tdd " + initValue + "\n\n"; // 32-bit dword
+                    } else {
+                        dataSegment += "\tdw " + initValue + "\n\n"; // 16-bit word
+                    }
                 }
             }
         } else if (gv->initializer) {
@@ -243,6 +268,12 @@ std::string CodeGen::generate(const ir::Module& module) {
                 bssSegment += dataLabel + ":\n";
                 bssSegment += "\tresb " + std::to_string(byteSize) + "\n\n";
             } else {
+                std::string initValue = gv->initializer->text;
+                bool isComplex = initValue.find("<{") != std::string::npos ||
+                                 initValue.find("zeroinitializer") != std::string::npos ||
+                                 initValue.find("undef") != std::string::npos ||
+                                 initValue.find("[") != std::string::npos;
+                
                 int byteSize = 2;
                 if (gv->type) {
                     if (gv->type->isInteger()) {
@@ -253,23 +284,26 @@ std::string CodeGen::generate(const ir::Module& module) {
                     }
                 }
                 
-                std::string initValue = gv->initializer->text;
-                
-                // Strip @ prefix from global references for NASM compatibility
-                // Always do this check regardless of kind
-                if (!initValue.empty() && initValue[0] == '@') {
-                    initValue = initValue.substr(1);
-                }
-                // Also strip leading '.' and add '_' for NASM compatibility
-                if (!initValue.empty() && initValue[0] == '.') {
-                    initValue = "_" + initValue.substr(1);
-                }
-                
-                dataSegment += dataLabel + ":\n";
-                if (byteSize == 4) {
-                    dataSegment += "\tdd " + initValue + "\n\n";
+                if (isComplex) {
+                    // Complex initializer: emit as zero-initialized BSS data
+                    bssSegment += dataLabel + ":\n";
+                    bssSegment += "\tresb " + std::to_string(byteSize) + "\n\n";
                 } else {
-                    dataSegment += "\tdw " + initValue + "\n\n";
+                    // Strip @ prefix from global references for NASM compatibility
+                    if (!initValue.empty() && initValue[0] == '@') {
+                        initValue = initValue.substr(1);
+                    }
+                    // Also strip leading '.' and add '_' for NASM compatibility
+                    if (!initValue.empty() && initValue[0] == '.') {
+                        initValue = "_" + initValue.substr(1);
+                    }
+                    
+                    dataSegment += dataLabel + ":\n";
+                    if (byteSize == 4) {
+                        dataSegment += "\tdd " + initValue + "\n\n";
+                    } else {
+                        dataSegment += "\tdw " + initValue + "\n\n";
+                    }
                 }
             }
         }
@@ -289,7 +323,8 @@ std::string CodeGen::generate(const ir::Module& module) {
         dataSegment, // data segment
         bssSegment, // bss segment
         entryFuncName,
-        externFuncs
+        externFuncs,
+        externGlobals
     );
 }
 

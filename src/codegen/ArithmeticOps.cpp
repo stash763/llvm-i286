@@ -9,6 +9,20 @@
 namespace llvm_i286 {
 namespace codegen {
 
+// Helper: if a vreg is mapped to ax/cx/dx, move it to bx and return "bx".
+// In 16-bit mode only bx/si/di/bp may appear in a memory operand.
+static std::string safeMemAddr(const std::string& reg, std::vector<Instruction286>& out) {
+    if (reg == "ax" || reg == "cx" || reg == "dx") {
+        Instruction286 m;
+        m.mnemonic = "mov";
+        m.operands.push_back("bx");
+        m.operands.push_back(reg);
+        out.push_back(m);
+        return "bx";
+    }
+    return reg;
+}
+
 std::vector<LoweredInstruction> lowerAdd(SelectorState& state,
     const ir::Instruction& irInst, const std::string& resultReg) {
     std::vector<LoweredInstruction> loweredVec;
@@ -41,19 +55,20 @@ std::vector<LoweredInstruction> lowerAdd(SelectorState& state,
             }
 
             // Load op1 low word to AX, high word to BX
+            std::string op1Addr = safeMemAddr(op1Stack, lowered.instructions);
+            
             Instruction286 loadLow;
             loadLow.mnemonic = "mov";
             loadLow.operands.push_back("ax");
-            loadLow.operands.push_back("[" + op1Stack + "]");
+            loadLow.operands.push_back("[" + op1Addr + "]");
             lowered.instructions.push_back(loadLow);
 
             Instruction286 loadHigh;
             loadHigh.mnemonic = "mov";
             loadHigh.operands.push_back("bx");
-            // Calculate correct offset for high word
-            if (op1Stack.find("bp") != std::string::npos) {
+            if (op1Addr.find("bp") != std::string::npos) {
                 int offset = 0;
-                std::string offsetStr = op1Stack.substr(2);
+                std::string offsetStr = op1Addr.substr(2);
                 if (!offsetStr.empty()) {
                     try { offset = std::stoi(offsetStr); } catch (...) {}
                 }
@@ -61,38 +76,37 @@ std::vector<LoweredInstruction> lowerAdd(SelectorState& state,
                 std::string offsetStr2 = (newOffset >= 0) ? ("+" + std::to_string(newOffset)) : std::to_string(newOffset);
                 loadHigh.operands.push_back("[" + std::string("bp") + offsetStr2 + "]");
             } else {
-                loadHigh.operands.push_back("[" + op1Stack + "+2]");
+                loadHigh.operands.push_back("[" + op1Addr + "+2]");
             }
             lowered.instructions.push_back(loadHigh);
 
             // Load op2 low word to CX, high word to DX
+            std::string op2Addr = safeMemAddr(op2Stack, lowered.instructions);
+
             Instruction286 loadOp2Low;
             loadOp2Low.mnemonic = "mov";
             if (op2IsConst) {
-                // Load constant low word
                 int64_t constVal = std::stoll(op2Name);
                 loadOp2Low.operands.push_back("cx");
                 loadOp2Low.operands.push_back(std::to_string(constVal & 0xFFFF));
             } else {
                 loadOp2Low.operands.push_back("cx");
-                loadOp2Low.operands.push_back("[" + op2Stack + "]");
+                loadOp2Low.operands.push_back("[" + op2Addr + "]");
             }
             lowered.instructions.push_back(loadOp2Low);
 
             Instruction286 loadOp2High;
             loadOp2High.mnemonic = "mov";
             if (op2IsConst) {
-                // Load constant high word (sign-extend for negative constants)
                 int64_t constVal = std::stoll(op2Name);
                 int16_t highWord = (constVal >> 16) & 0xFFFF;
                 loadOp2High.operands.push_back("dx");
                 loadOp2High.operands.push_back(std::to_string(highWord));
             } else {
                 loadOp2High.operands.push_back("dx");
-                // Calculate correct offset for high word
-                if (op2Stack.find("bp") != std::string::npos) {
+                if (op2Addr.find("bp") != std::string::npos) {
                     int offset = 0;
-                    std::string offsetStr = op2Stack.substr(2);
+                    std::string offsetStr = op2Addr.substr(2);
                     if (!offsetStr.empty()) {
                         try { offset = std::stoi(offsetStr); } catch (...) {}
                     }
@@ -100,7 +114,7 @@ std::vector<LoweredInstruction> lowerAdd(SelectorState& state,
                     std::string offsetStr2 = (newOffset >= 0) ? ("+" + std::to_string(newOffset)) : std::to_string(newOffset);
                     loadOp2High.operands.push_back("[" + std::string("bp") + offsetStr2 + "]");
                 } else {
-                    loadOp2High.operands.push_back("[" + op2Stack + "+2]");
+                    loadOp2High.operands.push_back("[" + op2Addr + "+2]");
                 }
             }
             lowered.instructions.push_back(loadOp2High);
@@ -264,19 +278,20 @@ std::vector<LoweredInstruction> lowerSub(SelectorState& state,
             }
 
             // Load op1 low word to AX, high word to BX
+            std::string op1Addr = safeMemAddr(op1Stack, lowered.instructions);
+            
             Instruction286 loadLow;
             loadLow.mnemonic = "mov";
             loadLow.operands.push_back("ax");
-            loadLow.operands.push_back("[" + op1Stack + "]");
+            loadLow.operands.push_back("[" + op1Addr + "]");
             lowered.instructions.push_back(loadLow);
 
             Instruction286 loadHigh;
             loadHigh.mnemonic = "mov";
             loadHigh.operands.push_back("bx");
-            // Calculate correct offset for high word
-            if (op1Stack.find("bp") != std::string::npos) {
+            if (op1Addr.find("bp") != std::string::npos) {
                 int offset = 0;
-                std::string offsetStr = op1Stack.substr(2);
+                std::string offsetStr = op1Addr.substr(2);
                 if (!offsetStr.empty()) {
                     try { offset = std::stoi(offsetStr); } catch (...) {}
                 }
@@ -284,38 +299,37 @@ std::vector<LoweredInstruction> lowerSub(SelectorState& state,
                 std::string offsetStr2 = (newOffset >= 0) ? ("+" + std::to_string(newOffset)) : std::to_string(newOffset);
                 loadHigh.operands.push_back("[" + std::string("bp") + offsetStr2 + "]");
             } else {
-                loadHigh.operands.push_back("[" + op1Stack + "+2]");
+                loadHigh.operands.push_back("[" + op1Addr + "+2]");
             }
             lowered.instructions.push_back(loadHigh);
 
             // Load op2 low word to CX, high word to DX
+            std::string op2Addr = safeMemAddr(op2Stack, lowered.instructions);
+
             Instruction286 loadOp2Low;
             loadOp2Low.mnemonic = "mov";
             if (op2IsConst) {
-                // Load constant low word
                 int64_t constVal = std::stoll(op2Name);
                 loadOp2Low.operands.push_back("cx");
                 loadOp2Low.operands.push_back(std::to_string(constVal & 0xFFFF));
             } else {
                 loadOp2Low.operands.push_back("cx");
-                loadOp2Low.operands.push_back("[" + op2Stack + "]");
+                loadOp2Low.operands.push_back("[" + op2Addr + "]");
             }
             lowered.instructions.push_back(loadOp2Low);
 
             Instruction286 loadOp2High;
             loadOp2High.mnemonic = "mov";
             if (op2IsConst) {
-                // Load constant high word (sign-extend for negative constants)
                 int64_t constVal = std::stoll(op2Name);
                 int16_t highWord = (constVal >> 16) & 0xFFFF;
                 loadOp2High.operands.push_back("dx");
                 loadOp2High.operands.push_back(std::to_string(highWord));
             } else {
                 loadOp2High.operands.push_back("dx");
-                // Calculate correct offset for high word
-                if (op2Stack.find("bp") != std::string::npos) {
+                if (op2Addr.find("bp") != std::string::npos) {
                     int offset = 0;
-                    std::string offsetStr = op2Stack.substr(2);
+                    std::string offsetStr = op2Addr.substr(2);
                     if (!offsetStr.empty()) {
                         try { offset = std::stoi(offsetStr); } catch (...) {}
                     }
@@ -323,7 +337,7 @@ std::vector<LoweredInstruction> lowerSub(SelectorState& state,
                     std::string offsetStr2 = (newOffset >= 0) ? ("+" + std::to_string(newOffset)) : std::to_string(newOffset);
                     loadOp2High.operands.push_back("[" + std::string("bp") + offsetStr2 + "]");
                 } else {
-                    loadOp2High.operands.push_back("[" + op2Stack + "+2]");
+                    loadOp2High.operands.push_back("[" + op2Addr + "+2]");
                 }
             }
             lowered.instructions.push_back(loadOp2High);
@@ -481,19 +495,23 @@ std::vector<LoweredInstruction> lowerMul(SelectorState& state,
                 resultStack = state.frame.allocTemp(4, true);
             }
 
+            // Use safeMemAddr to handle register operands (ax/cx/dx can't be used for addressing)
+            std::string op1Addr = safeMemAddr(op1Stack, lowered.instructions);
+            std::string op2Addr = safeMemAddr(op2Stack, lowered.instructions);
+
             // Load op1 into AX:BX
             Instruction286 loadOp1Low;
             loadOp1Low.mnemonic = "mov";
             loadOp1Low.operands.push_back("ax");
-            loadOp1Low.operands.push_back("[" + op1Stack + "]");
+            loadOp1Low.operands.push_back("[" + op1Addr + "]");
             lowered.instructions.push_back(loadOp1Low);
 
             Instruction286 loadOp1High;
             loadOp1High.mnemonic = "mov";
             loadOp1High.operands.push_back("bx");
-            if (op1Stack.find("bp") != std::string::npos) {
+            if (op1Addr.find("bp") != std::string::npos) {
                 int offset = 0;
-                std::string offsetStr = op1Stack.substr(2);
+                std::string offsetStr = op1Addr.substr(2);
                 if (!offsetStr.empty()) {
                     try { offset = std::stoi(offsetStr); } catch (...) {}
                 }
@@ -501,7 +519,7 @@ std::vector<LoweredInstruction> lowerMul(SelectorState& state,
                 std::string offsetStr2 = (newOffset >= 0) ? ("+" + std::to_string(newOffset)) : std::to_string(newOffset);
                 loadOp1High.operands.push_back("[" + std::string("bp") + offsetStr2 + "]");
             } else {
-                loadOp1High.operands.push_back("[" + op1Stack + "+2]");
+                loadOp1High.operands.push_back("[" + op1Addr + "+2]");
             }
             lowered.instructions.push_back(loadOp1High);
 
@@ -509,15 +527,15 @@ std::vector<LoweredInstruction> lowerMul(SelectorState& state,
             Instruction286 loadOp2Low;
             loadOp2Low.mnemonic = "mov";
             loadOp2Low.operands.push_back("cx");
-            loadOp2Low.operands.push_back("[" + op2Stack + "]");
+            loadOp2Low.operands.push_back("[" + op2Addr + "]");
             lowered.instructions.push_back(loadOp2Low);
 
             Instruction286 loadOp2High;
             loadOp2High.mnemonic = "mov";
             loadOp2High.operands.push_back("dx");
-            if (op2Stack.find("bp") != std::string::npos) {
+            if (op2Addr.find("bp") != std::string::npos) {
                 int offset = 0;
-                std::string offsetStr = op2Stack.substr(2);
+                std::string offsetStr = op2Addr.substr(2);
                 if (!offsetStr.empty()) {
                     try { offset = std::stoi(offsetStr); } catch (...) {}
                 }
@@ -526,9 +544,9 @@ std::vector<LoweredInstruction> lowerMul(SelectorState& state,
                 loadOp2High.operands.push_back("[" + std::string("bp") + offsetStr2 + "]");
             } else {
                 // Calculate correct offset for high word
-                if (op2Stack.find("bp") != std::string::npos) {
+                if (op2Addr.find("bp") != std::string::npos) {
                     int offset = 0;
-                    std::string offsetStr = op2Stack.substr(2);
+                    std::string offsetStr = op2Addr.substr(2);
                     if (!offsetStr.empty()) {
                         try { offset = std::stoi(offsetStr); } catch (...) {}
                     }
@@ -536,7 +554,7 @@ std::vector<LoweredInstruction> lowerMul(SelectorState& state,
                     std::string offsetStr2 = (newOffset >= 0) ? ("+" + std::to_string(newOffset)) : std::to_string(newOffset);
                     loadOp2High.operands.push_back("[" + std::string("bp") + offsetStr2 + "]");
                 } else {
-                    loadOp2High.operands.push_back("[" + op2Stack + "+2]");
+                    loadOp2High.operands.push_back("[" + op2Addr + "+2]");
                 }
             }
             lowered.instructions.push_back(loadOp2High);

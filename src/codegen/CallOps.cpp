@@ -59,6 +59,20 @@ std::vector<LoweredInstruction> lowerCall(SelectorState& state,
     // Push arguments right-to-left
     for (int i = static_cast<int>(args.size()) - 1; i >= 0; i--) {
         std::string argName = args[i];
+        
+        // Detect floating-point constants that we can't materialize
+        // Skip them by pushing 0 instead (FP operations not fully supported)
+        bool argIsFPConst = argName.find("0xK") != std::string::npos ||
+                            (argName.find('e') != std::string::npos && 
+                             (argName.find('+') != std::string::npos || argName.find('-') != std::string::npos));
+        if (argIsFPConst) {
+            // Push 0 instead of the FP constant
+            Instruction286 pushZero;
+            pushZero.mnemonic = "push";
+            pushZero.operands.push_back("0");
+            lowered.instructions.push_back(pushZero);
+            continue;
+        }
 
         // Determine if this is a vreg reference (starts with '%') or a constant/global
         bool argIsVregRef = (!argName.empty() && argName[0] == '%');
@@ -307,10 +321,36 @@ std::vector<LoweredInstruction> lowerCall(SelectorState& state,
     }
 
     // Call the function
-    Instruction286 callInst;
-    callInst.mnemonic = "call";
-    callInst.operands.push_back(callee);
-    lowered.instructions.push_back(callInst);
+    // Check if callee is an indirect call through a vreg (function pointer)
+    if (!callee.empty() && callee[0] == '%') {
+        // Indirect call: load function pointer and call through register
+        // The callee vreg should map to a stack slot or register
+        std::string calleeReg = state.frame.getPhysReg(callee);
+        if (calleeReg.find("bp") != std::string::npos) {
+            // Value is at a stack location - load into BX and call
+            Instruction286 loadPtr;
+            loadPtr.mnemonic = "lea";
+            loadPtr.operands.push_back("bx");
+            loadPtr.operands.push_back("[" + calleeReg + "]");
+            lowered.instructions.push_back(loadPtr);
+            
+            Instruction286 callIndirect;
+            callIndirect.mnemonic = "call";
+            callIndirect.operands.push_back("bx");
+            lowered.instructions.push_back(callIndirect);
+        } else {
+            // Value is in a register - call through that register
+            Instruction286 callIndirect;
+            callIndirect.mnemonic = "call";
+            callIndirect.operands.push_back(calleeReg);
+            lowered.instructions.push_back(callIndirect);
+        }
+    } else {
+        Instruction286 callInst;
+        callInst.mnemonic = "call";
+        callInst.operands.push_back(callee);
+        lowered.instructions.push_back(callInst);
+    }
 
     // Clean up stack (caller pays)
     if (!args.empty()) {
@@ -344,10 +384,39 @@ std::vector<LoweredInstruction> lowerCall(SelectorState& state,
         }
         
         if (is32) {
-            // 32-bit tracking now in StackFrame
+            // 32-bit result: store ax (low) and dx (high) to stack
+            std::string resultStack = state.frame.getPhysReg(irInst.resultName);
+            if (resultStack == "ax" || resultStack == "bx" || resultStack == "cx" || resultStack == "dx") {
+                resultStack = state.frame.allocTemp(4, true);
+            }
+            Instruction286 storeLow;
+            storeLow.mnemonic = "mov";
+            storeLow.operands.push_back("[" + resultStack + "]");
+            storeLow.operands.push_back("ax");
+            lowered.instructions.push_back(storeLow);
+            
+            std::string highOffset = state.frame.getHighBpOffset(resultStack);
+            Instruction286 storeHigh;
+            storeHigh.mnemonic = "mov";
+            storeHigh.operands.push_back("[" + highOffset + "]");
+            storeHigh.operands.push_back("dx");
+            lowered.instructions.push_back(storeHigh);
+            
+            state.frame.setPhysReg(irInst.resultName, resultStack);
+        } else {
+            // 16-bit result: store ax to stack
+            std::string resultStack = state.frame.getPhysReg(irInst.resultName);
+            if (resultStack == "ax" || resultStack == "bx" || resultStack == "cx" || resultStack == "dx") {
+                resultStack = state.frame.allocTemp(2, false);
+            }
+            Instruction286 storeResult;
+            storeResult.mnemonic = "mov";
+            storeResult.operands.push_back("[" + resultStack + "]");
+            storeResult.operands.push_back("ax");
+            lowered.instructions.push_back(storeResult);
+            
+            state.frame.setPhysReg(irInst.resultName, resultStack);
         }
-        
-        state.frame.setPhysReg(irInst.resultName, "ax");
     }
 
     loweredVec.push_back(lowered);
