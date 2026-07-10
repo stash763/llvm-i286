@@ -5,8 +5,6 @@
 
 BITS 16
 
-segment _TEXT CLASS=CODE
-
 extern DOSEXIT
 extern DOSWRITE
 extern DOSREAD
@@ -14,6 +12,18 @@ extern DOSCLOSE
 
 global __os2_syscall0
 global __os2_syscall1
+global __os2_syscall2
+global __os2_syscall3
+global __os2_syscall4
+global __os2_syscall5
+global __os2_syscall6
+
+segment _DATA CLASS=DATA
+
+_syscall_wlen dw 0
+byte_msg db 'X'
+
+segment _TEXT CLASS=CODE
 global __os2_syscall2
 global __os2_syscall3
 global __os2_syscall4
@@ -148,7 +158,7 @@ __os2_syscall3:
     push bp
     mov bp, sp
     
-    ; Load syscall number
+    ; Load syscall number (first arg is at [bp+4] for near calls)
     mov ax, [bp+4]
     
     cmp ax, 2         ; __NR_write
@@ -165,13 +175,33 @@ __os2_syscall3:
 
 .syscall_write:
     ; write(fd, buf, count) -> DosWrite(hf, buf, count, &bytesWritten)
-    ; For now, just return the count as the result (ignore actual write)
-    ; This lets us test the syscall dispatch without dealing with buffer issues
     
-    mov ax, word [bp+16]  ; return count (low word) as result
-    cwd                   ; sign-extend to DX:AX
+    push si
+    push di
+    
+    ; Get parameters from __os2_syscall3's frame
+    mov ax, [bp+8]      ; hf (file handle)
+    mov si, [bp+12]     ; buf offset (low word)
+    mov di, [bp+14]     ; buf selector (high word)
+    mov cx, [bp+16]     ; count (low word)
+    
+    ; Call DosWrite(hf, buf_selector, buf_offset, count, wlen_selector, wlen_offset)
+    push ax             ; hf
+    push di             ; buf selector
+    push si             ; buf offset
+    push cx             ; count
+    push ds             ; wlen selector
+    push _syscall_wlen  ; wlen offset
+    call far DOSWRITE
+    ; DOSWRITE cleans up the stack (Pascal convention, ret 12)
+    
+    ; Return count in AX
+    mov ax, cx
+    
+    pop di
+    pop si
     pop bp
-    ret                   ; caller cleanup
+    ret
 
 .syscall_read:
     ; read(fd, buf, count) -> DosRead(hf, buf, count, &bytesRead)

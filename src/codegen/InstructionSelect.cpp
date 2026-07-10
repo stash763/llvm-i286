@@ -89,8 +89,8 @@ std::vector<LoweredInstruction> InstructionSelector::lowerInstruction(const ir::
         case ir::Opcode::ZExt:     return lowerZExt(*impl, irInst, resultReg);
         case ir::Opcode::SExt:     return lowerSExt(*impl, irInst, resultReg);
         case ir::Opcode::BitCast:
-        case ir::Opcode::PtrToInt:
         case ir::Opcode::IntToPtr: return lowerBitCast(*impl, irInst, resultReg);
+        case ir::Opcode::PtrToInt: return lowerPtrToInt(*impl, irInst, resultReg);
         case ir::Opcode::Freeze:   return lowerFreeze(*impl, irInst, resultReg);
         case ir::Opcode::ExtractValue: return lowerExtractValue(*impl, irInst, resultReg);
         case ir::Opcode::InsertValue: return lowerInsertValue(*impl, irInst, resultReg);

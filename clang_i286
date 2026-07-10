@@ -35,7 +35,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # --- Configuration (env-overridable) ---
 WATCOM_DIR="${WATCOM:-$HOME/ow/open-watcom-v2/rel}"
-CLANG_BIN="${CLANG:-clang}"
+CLANG_BIN="${CLANG:-clang-15}"
 LLVM_I286_BIN="${LLVM_I286:-$SCRIPT_DIR/build/llvm-i286}"
 NASM_BIN="${NASM:-nasm}"
 WLINK_BIN="${WLINK:-$WATCOM_DIR/binl/wlink}"

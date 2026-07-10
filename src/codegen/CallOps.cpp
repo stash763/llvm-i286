@@ -65,13 +65,39 @@ std::vector<LoweredInstruction> lowerCall(SelectorState& state,
         // Use argName directly for vreg lookup (maps use full name with % prefix)
         std::string vregLookupName = argName;
 
-        // Check if argument is a global variable (starts with '.')
-        bool isGlobal = (!argName.empty() && argName[0] == '.');
+        // Check if argument is a global variable (starts with '.' or '@')
+        bool isGlobal = (!argName.empty() && (argName[0] == '.' || argName[0] == '@'));
 
-        // Convert global variable name to NASM format (remove leading dot, add underscore)
+        // Check if argument is a ptrtoint constant expression: ptrtoint(ptr@global to i32)
+        bool isPtrToIntExpr = (!argName.empty() && argName.substr(0, 8) == "ptrtoint");
+        std::string ptrToIntGlobalName;
+        if (isPtrToIntExpr) {
+            // Extract global name from "ptrtoint(ptr@name to i32)" or "ptrtoint(ptr@nametoi32)"
+            auto atPos = argName.find('@');
+            if (atPos != std::string::npos) {
+                // Look for 'to' keyword after the global name
+                auto toPos = argName.find("to", atPos + 1);
+                if (toPos != std::string::npos) {
+                    ptrToIntGlobalName = argName.substr(atPos + 1, toPos - atPos - 1);
+                } else {
+                    // Fallback: take everything after @ until ')'
+                    auto endPos = argName.find(')', atPos + 1);
+                    ptrToIntGlobalName = argName.substr(atPos + 1, endPos != std::string::npos ? endPos - atPos - 1 : std::string::npos);
+                }
+                isGlobal = true; // Treat as global for codegen purposes
+            }
+        }
+
+        // Convert global variable name to NASM format (remove leading dot or @)
         std::string nasmName = argName;
-        if (isGlobal && nasmName.size() > 1) {
-            nasmName = "_" + nasmName.substr(1);
+        if (isGlobal && nasmName.size() > 1 && !isPtrToIntExpr) {
+            // Regular global: convert leading . or @ to _ for NASM compatibility
+            if (nasmName[0] == '.' || nasmName[0] == '@') {
+                nasmName[0] = '_';
+            }
+        } else if (isGlobal && isPtrToIntExpr && !ptrToIntGlobalName.empty()) {
+            // ptrtoint expression: use the extracted global name directly
+            nasmName = ptrToIntGlobalName;
         }
 
         // Check if argument is a vreg/parameter (either register-allocated or stack-allocated)
@@ -108,16 +134,36 @@ std::vector<LoweredInstruction> lowerCall(SelectorState& state,
         if (is32) {
             // 32-bit argument: push high word first, then low word
             if (isGlobal) {
-                // Global variable - push both words
-                Instruction286 pushHigh;
-                pushHigh.mnemonic = "push";
-                pushHigh.operands.push_back("word [" + nasmName + "+2]");
-                lowered.instructions.push_back(pushHigh);
+                if (isPtrToIntExpr) {
+                    // ptrtoint constant expression - push address of global
+                    // High word = 0, low word = address (offset)
+                    Instruction286 leaLow;
+                    leaLow.mnemonic = "lea";
+                    leaLow.operands.push_back("ax");
+                    leaLow.operands.push_back("[" + nasmName + "]");
+                    lowered.instructions.push_back(leaLow);
 
-                Instruction286 pushLow;
-                pushLow.mnemonic = "push";
-                pushLow.operands.push_back("word [" + nasmName + "]");
-                lowered.instructions.push_back(pushLow);
+                    Instruction286 pushHigh;
+                    pushHigh.mnemonic = "push";
+                    pushHigh.operands.push_back("0");
+                    lowered.instructions.push_back(pushHigh);
+
+                    Instruction286 pushLow;
+                    pushLow.mnemonic = "push";
+                    pushLow.operands.push_back("ax");
+                    lowered.instructions.push_back(pushLow);
+                } else {
+                    // Global variable - push both words of VALUE stored at address
+                    Instruction286 pushHigh;
+                    pushHigh.mnemonic = "push";
+                    pushHigh.operands.push_back("word [" + nasmName + "+2]");
+                    lowered.instructions.push_back(pushHigh);
+
+                    Instruction286 pushLow;
+                    pushLow.mnemonic = "push";
+                    pushLow.operands.push_back("word [" + nasmName + "]");
+                    lowered.instructions.push_back(pushLow);
+                }
             } else if (isConst) {
                 // 32-bit constant: split into low and high words
                 // Parse the constant as a 32-bit integer
@@ -128,21 +174,21 @@ std::vector<LoweredInstruction> lowerCall(SelectorState& state,
                     // If parse fails, treat as 0
                     val = 0;
                 }
-                // High word: sign-extended upper 16 bits
-                int16_t highWord = (int16_t)((uint32_t)val >> 16);
                 // Low word: lower 16 bits
                 int16_t lowWord = (int16_t)((uint32_t)val & 0xFFFF);
-
-                Instruction286 pushHigh;
-                pushHigh.mnemonic = "push";
-                pushHigh.operands.push_back(std::to_string((int)highWord));
-                lowered.instructions.push_back(pushHigh);
+                // High word: sign-extended upper 16 bits
+                int16_t highWord = (int16_t)((uint32_t)val >> 16);
 
                 Instruction286 movConst;
                 movConst.mnemonic = "mov";
                 movConst.operands.push_back("ax");
                 movConst.operands.push_back(std::to_string((int)lowWord));
                 lowered.instructions.push_back(movConst);
+
+                Instruction286 pushHigh;
+                pushHigh.mnemonic = "push";
+                pushHigh.operands.push_back(std::to_string((int)highWord));
+                lowered.instructions.push_back(pushHigh);
 
                 Instruction286 pushLow;
                 pushLow.mnemonic = "push";
@@ -155,8 +201,8 @@ std::vector<LoweredInstruction> lowerCall(SelectorState& state,
                   if (argIsAlloca) {
                     // Alloca result: the stack offset IS the pointer value
                     // We need to compute bp + offset at runtime and push that as the address
-                    // Push high word = SS selector (for far pointer in OS/2 1.x segmented model)
                     // Push low word = bp + offset (computed at runtime via lea)
+                    // Push high word = SS selector (for far pointer in OS/2 1.x segmented model)
                     std::string argReg = state.frame.getPhysReg(argName);
                     int offset = 0;
                     if (argReg.find("bp") != std::string::npos) {
@@ -165,11 +211,6 @@ std::vector<LoweredInstruction> lowerCall(SelectorState& state,
                             try { offset = std::stoi(offsetStr); } catch (...) {}
                         }
                     }
-                    Instruction286 pushHigh;
-                    pushHigh.mnemonic = "push";
-                    pushHigh.operands.push_back("ss");
-                    lowered.instructions.push_back(pushHigh);
-
                     // Compute bp + offset: lea ax, [bp+offset]
                     Instruction286 leaAx;
                     leaAx.mnemonic = "lea";
@@ -183,6 +224,11 @@ std::vector<LoweredInstruction> lowerCall(SelectorState& state,
                     }
                     lowered.instructions.push_back(leaAx);
 
+                    Instruction286 pushHigh;
+                    pushHigh.mnemonic = "push";
+                    pushHigh.operands.push_back("ss");
+                    lowered.instructions.push_back(pushHigh);
+
                     Instruction286 pushLow;
                     pushLow.mnemonic = "push";
                     pushLow.operands.push_back("ax");
@@ -191,24 +237,10 @@ std::vector<LoweredInstruction> lowerCall(SelectorState& state,
                     std::string argReg = state.frame.getPhysReg(vregLookupName);
                     if (argReg.find("bp") != std::string::npos) {
                         // Memory operand (value stored at stack location) - push both words
-                        // Compute high word offset properly
-                        std::string highAddr;
-                        if (argReg.find("bp") != std::string::npos) {
-                            int offset = 0;
-                            std::string offsetStr = argReg.substr(2); // Remove "bp"
-                            if (!offsetStr.empty()) {
-                                try { offset = std::stoi(offsetStr); } catch (...) {}
-                            }
-                            int newOffset = offset + 2;
-                            std::string offsetStr2 = (newOffset >= 0) ? ("+" + std::to_string(newOffset)) : std::to_string(newOffset);
-                            highAddr = "[" + std::string("bp") + offsetStr2 + "]";
-                        } else {
-                            highAddr = "[" + argReg + "+2]";
-                        }
-
+                        // Push high word first, then low word
                         Instruction286 pushHigh;
                         pushHigh.mnemonic = "push";
-                        pushHigh.operands.push_back("word " + highAddr);
+                        pushHigh.operands.push_back("word [" + argReg + "+2]");
                         lowered.instructions.push_back(pushHigh);
 
                         Instruction286 pushLow;

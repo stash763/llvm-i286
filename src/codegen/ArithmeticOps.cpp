@@ -369,7 +369,7 @@ std::vector<LoweredInstruction> lowerSub(SelectorState& state,
             }
         }
     } else {
-        // 16-bit sub (original code)
+        // 16-bit sub
         Instruction286 subInst;
         subInst.mnemonic = "sub";
 
@@ -393,6 +393,30 @@ std::vector<LoweredInstruction> lowerSub(SelectorState& state,
 
             std::string op1 = op1IsConst ? op1Name : state.frame.getPhysReg(op1Name);
             std::string op2 = op2IsConst ? op2Name : state.frame.getPhysReg(op2Name);
+
+            // Check if operands are memory locations (bp-relative)
+            bool op1IsMem = !op1IsConst && (op1.find("bp") != std::string::npos);
+            bool op2IsMem = !op2IsConst && (op2.find("bp") != std::string::npos);
+
+            // Load from memory if needed
+            if (op1IsMem) {
+                Instruction286 loadInst;
+                loadInst.mnemonic = "mov";
+                loadInst.operands.push_back("ax");
+                loadInst.operands.push_back("[" + op1 + "]");
+                lowered.instructions.push_back(loadInst);
+                op1 = "ax";
+            }
+
+            if (op2IsMem) {
+                std::string tmpReg = (op1 == "cx") ? "dx" : "cx";
+                Instruction286 loadTmp;
+                loadTmp.mnemonic = "mov";
+                loadTmp.operands.push_back(tmpReg);
+                loadTmp.operands.push_back("[" + op2 + "]");
+                lowered.instructions.push_back(loadTmp);
+                op2 = tmpReg;
+            }
 
             // Move op1 to resultReg if it's not already there
             if (!op1IsConst && resultReg != op1) {

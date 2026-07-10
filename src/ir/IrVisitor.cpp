@@ -9,6 +9,36 @@
 
 using namespace antlr::generated;
 
+// WORKAROUND for ANTLR4 lexer greediness.
+// The lexer rule is: IntType : 'i' DecimalDigit+
+// This is greedy, so for IR like "i32 2147483647" the lexer tokenizes
+// "i322147483647" as a single IntType token. The grammar expects
+// typeValue to be (firstClassType, value) but the lexer has already
+// merged them. This shows up when clang emits things like
+// "sub nsw i32 2147483647, %37" where the space between i32 and the
+// constant gets consumed into the IntType token.
+static int parseIntWidth(const std::string& tokenText) {
+    std::string numStr = tokenText.substr(1); // strip leading 'i'
+    int bitWidth = 0;
+    try {
+        bitWidth = std::stoi(numStr);
+    } catch (...) {
+        return 32;
+    }
+    if (bitWidth > 2048) {
+        // Tokenized as "i<width><value>" by lexer; try to split.
+        // Look for a known valid width prefix: i1, i8, i16, i32, i64, i128, etc.
+        static const int knownWidths[] = {128, 64, 32, 16, 8, 1};
+        for (int w : knownWidths) {
+            std::string prefix = std::to_string(w);
+            if (numStr.substr(0, prefix.size()) == prefix) {
+                return w;
+            }
+        }
+    }
+    return bitWidth;
+}
+
 namespace llvm_i286 {
 namespace ir {
 
@@ -304,7 +334,7 @@ std::any IrVisitor::visitBasicBlock(LLVMIRParser::BasicBlockContext *ctx) {
                 if (storeCtx->typeValue(0)->firstClassType()) {
                     std::string typeText = storeCtx->typeValue(0)->firstClassType()->getText();
                     if (typeText.substr(0, 1) == "i") {
-                        instPtr->resultType = Type::makeInteger(std::stoi(typeText.substr(1)));
+                        instPtr->resultType = Type::makeInteger(parseIntWidth(typeText));
                     } else if (typeText == "ptr") {
                         instPtr->resultType = std::make_unique<Type>();
                         instPtr->resultType->kind = TypeKind::Pointer;
@@ -362,11 +392,36 @@ std::unique_ptr<Type> IrVisitor::parseIntType(LLVMIRParser::IntTypeContext *ctx)
     
     std::string text = ctx->IntType()->getText();
     if (text.size() > 1 && text[0] == 'i') {
+        // WORKAROUND for ANTLR4 lexer greediness.
+        // The lexer rule is: IntType : 'i' DecimalDigit+
+        // This is greedy, so for IR like "i32 2147483647" the lexer tokenizes
+        // "i322147483647" as a single IntType token. The grammar expects
+        // typeValue to be (firstClassType, value) but the lexer has already
+        // merged them. This shows up with clang emitting things like
+        // "sub nsw i32 2147483647, %37" where the space between i32 and the
+        // constant gets consumed into the IntType token.
+        // We detect this by checking if the bit width is unreasonably large
+        // (anything above i2048 is clearly a mis-tokenization).
+        int bitWidth = 0;
+        std::string numStr = text.substr(1);
         try {
-            type->bitWidth = std::stoi(text.substr(1));
+            bitWidth = std::stoi(numStr);
         } catch (...) {
-            type->bitWidth = 32;
+            bitWidth = 32;
         }
+        if (bitWidth > 2048) {
+            // Tokenized as "i<width><value>" by lexer; try to split.
+            // Look for a known valid width prefix: i1, i8, i16, i32, i64, i128, etc.
+            static const int knownWidths[] = {128, 64, 32, 16, 8, 1};
+            for (int w : knownWidths) {
+                std::string prefix = std::to_string(w);
+                if (numStr.substr(0, prefix.size()) == prefix) {
+                    bitWidth = w;
+                    break;
+                }
+            }
+        }
+        type->bitWidth = bitWidth;
     } else {
         type->bitWidth = 32;
     }
@@ -420,7 +475,7 @@ std::unique_ptr<Instruction> IrVisitor::parseInstruction(LLVMIRParser::ValueInst
                 // Parse the type (e.g., "i32")
                 size_t spacePos = typeText.find(' ');
                 std::string typeStr = spacePos != std::string::npos ? typeText.substr(0, spacePos) : typeText;
-                inst->resultType = Type::makeInteger(std::stoi(typeStr.substr(1)));
+                inst->resultType = Type::makeInteger(parseIntWidth(typeStr));
             }
             
             Operand op1;
@@ -445,7 +500,7 @@ std::unique_ptr<Instruction> IrVisitor::parseInstruction(LLVMIRParser::ValueInst
             if (typeText.substr(0, 1) == "i") {
                 size_t spacePos = typeText.find(' ');
                 std::string typeStr = spacePos != std::string::npos ? typeText.substr(0, spacePos) : typeText;
-                inst->resultType = Type::makeInteger(std::stoi(typeStr.substr(1)));
+                inst->resultType = Type::makeInteger(parseIntWidth(typeStr));
             }
             
             Operand op1;
@@ -469,7 +524,7 @@ std::unique_ptr<Instruction> IrVisitor::parseInstruction(LLVMIRParser::ValueInst
             if (typeText.substr(0, 1) == "i") {
                 size_t spacePos = typeText.find(' ');
                 std::string typeStr = spacePos != std::string::npos ? typeText.substr(0, spacePos) : typeText;
-                inst->resultType = Type::makeInteger(std::stoi(typeStr.substr(1)));
+                inst->resultType = Type::makeInteger(parseIntWidth(typeStr));
             }
             
             Operand op1;
@@ -556,7 +611,7 @@ std::unique_ptr<Instruction> IrVisitor::parseInstruction(LLVMIRParser::ValueInst
             std::string typeText = loadCtx->type()->getText();
             if (typeText.substr(0, 1) == "i") {
                 // Parse the type (e.g., "i32")
-                inst->resultType = Type::makeInteger(std::stoi(typeText.substr(1)));
+                inst->resultType = Type::makeInteger(parseIntWidth(typeText));
             } else if (typeText == "ptr") {
                 // Pointer type (32-bit)
                 inst->resultType = std::make_unique<Type>();
@@ -584,7 +639,7 @@ std::unique_ptr<Instruction> IrVisitor::parseInstruction(LLVMIRParser::ValueInst
             if (typeText.substr(0, 1) == "i") {
                 size_t spacePos = typeText.find(' ');
                 std::string typeStr = spacePos != std::string::npos ? typeText.substr(0, spacePos) : typeText;
-                inst->resultType = Type::makeInteger(std::stoi(typeStr.substr(1)));
+                inst->resultType = Type::makeInteger(parseIntWidth(typeStr));
             }
             Operand op1;
             op1.name = ctx_->typeValue()->value() ? ctx_->typeValue()->value()->getText() : "";
@@ -602,7 +657,7 @@ std::unique_ptr<Instruction> IrVisitor::parseInstruction(LLVMIRParser::ValueInst
             if (typeText.substr(0, 1) == "i") {
                 size_t spacePos = typeText.find(' ');
                 std::string typeStr = spacePos != std::string::npos ? typeText.substr(0, spacePos) : typeText;
-                inst->resultType = Type::makeInteger(std::stoi(typeStr.substr(1)));
+                inst->resultType = Type::makeInteger(parseIntWidth(typeStr));
             }
             Operand op1;
             op1.name = ctx_->typeValue()->value() ? ctx_->typeValue()->value()->getText() : "";
@@ -620,7 +675,7 @@ std::unique_ptr<Instruction> IrVisitor::parseInstruction(LLVMIRParser::ValueInst
             if (typeText.substr(0, 1) == "i") {
                 size_t spacePos = typeText.find(' ');
                 std::string typeStr = spacePos != std::string::npos ? typeText.substr(0, spacePos) : typeText;
-                inst->resultType = Type::makeInteger(std::stoi(typeStr.substr(1)));
+                inst->resultType = Type::makeInteger(parseIntWidth(typeStr));
             }
             Operand op1;
             op1.name = ctx_->typeValue()->value() ? ctx_->typeValue()->value()->getText() : "";
@@ -638,7 +693,7 @@ std::unique_ptr<Instruction> IrVisitor::parseInstruction(LLVMIRParser::ValueInst
             if (typeText.substr(0, 1) == "i") {
                 size_t spacePos = typeText.find(' ');
                 std::string typeStr = spacePos != std::string::npos ? typeText.substr(0, spacePos) : typeText;
-                inst->resultType = Type::makeInteger(std::stoi(typeStr.substr(1)));
+                inst->resultType = Type::makeInteger(parseIntWidth(typeStr));
             }
             Operand op1;
             op1.name = ctx_->typeValue()->value() ? ctx_->typeValue()->value()->getText() : "";
@@ -656,7 +711,7 @@ std::unique_ptr<Instruction> IrVisitor::parseInstruction(LLVMIRParser::ValueInst
             if (typeText.substr(0, 1) == "i") {
                 size_t spacePos = typeText.find(' ');
                 std::string typeStr = spacePos != std::string::npos ? typeText.substr(0, spacePos) : typeText;
-                inst->resultType = Type::makeInteger(std::stoi(typeStr.substr(1)));
+                inst->resultType = Type::makeInteger(parseIntWidth(typeStr));
             }
             Operand op1;
             op1.name = ctx_->typeValue()->value() ? ctx_->typeValue()->value()->getText() : "";
@@ -674,7 +729,7 @@ std::unique_ptr<Instruction> IrVisitor::parseInstruction(LLVMIRParser::ValueInst
             if (typeText.substr(0, 1) == "i") {
                 size_t spacePos = typeText.find(' ');
                 std::string typeStr = spacePos != std::string::npos ? typeText.substr(0, spacePos) : typeText;
-                inst->resultType = Type::makeInteger(std::stoi(typeStr.substr(1)));
+                inst->resultType = Type::makeInteger(parseIntWidth(typeStr));
             }
             Operand op1;
             op1.name = ctx_->typeValue()->value() ? ctx_->typeValue()->value()->getText() : "";
@@ -694,7 +749,7 @@ std::unique_ptr<Instruction> IrVisitor::parseInstruction(LLVMIRParser::ValueInst
             if (typeText.substr(0, 1) == "i") {
                 size_t spacePos = typeText.find(' ');
                 std::string typeStr = spacePos != std::string::npos ? typeText.substr(0, spacePos) : typeText;
-                inst->resultType = Type::makeInteger(std::stoi(typeStr.substr(1)));
+                inst->resultType = Type::makeInteger(parseIntWidth(typeStr));
             }
         }
         
@@ -765,7 +820,7 @@ std::unique_ptr<Instruction> IrVisitor::parseInstruction(LLVMIRParser::ValueInst
             if (typeText.substr(0, 1) == "i") {
                 size_t spacePos = typeText.find(' ');
                 std::string typeStr = spacePos != std::string::npos ? typeText.substr(0, spacePos) : typeText;
-                inst->resultType = Type::makeInteger(std::stoi(typeStr.substr(1)));
+                inst->resultType = Type::makeInteger(parseIntWidth(typeStr));
             }
             
                                     
@@ -797,7 +852,7 @@ std::unique_ptr<Instruction> IrVisitor::parseInstruction(LLVMIRParser::ValueInst
         if (zextCtx->type()) {
             std::string typeText = zextCtx->type()->getText();
             if (typeText.substr(0, 1) == "i") {
-                inst->resultType = Type::makeInteger(std::stoi(typeText.substr(1)));
+                inst->resultType = Type::makeInteger(parseIntWidth(typeText));
             }
         }
         if (zextCtx->typeValue()) {

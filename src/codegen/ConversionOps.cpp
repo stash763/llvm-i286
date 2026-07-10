@@ -334,28 +334,20 @@ std::vector<LoweredInstruction> lowerPtrToInt(SelectorState& state,
         // Load the pointer value (32-bit) into AX:DX
         // If the pointer is in memory, load both words
         if (ptrReg.find("bp") != std::string::npos) {
-            // Memory operand: load low word to AX, high word to DX
-            // ptrReg is like "bp-18", need to generate "[bp-18]" and "[bp-16]"
-            Instruction286 loadLow;
-            loadLow.mnemonic = "mov";
-            loadLow.operands.push_back("ax");
-            loadLow.operands.push_back("[" + ptrReg + "]");
-            lowered.instructions.push_back(loadLow);
+            // Memory operand: use MOV to load the VALUE of the pointer
+            // ptrReg is like "bp-18", we need mov ax, [bp-18]
+            Instruction286 movLow;
+            movLow.mnemonic = "mov";
+            movLow.operands.push_back("ax");
+            movLow.operands.push_back("[" + ptrReg + "]");
+            lowered.instructions.push_back(movLow);
 
-            // Compute high word offset: parse the offset and add 2
-            int offset = 0;
-            std::string offsetStr = ptrReg.substr(2); // Remove "bp"
-            if (!offsetStr.empty()) {
-                try { offset = std::stoi(offsetStr); } catch (...) {}
-            }
-            int highOffset = offset + 2;
-            std::string highOffsetStr = (highOffset >= 0) ? ("bp+" + std::to_string(highOffset)) : ("bp" + std::to_string(highOffset));
-
-            Instruction286 loadHigh;
-            loadHigh.mnemonic = "mov";
-            loadHigh.operands.push_back("dx");
-            loadHigh.operands.push_back("[" + highOffsetStr + "]");
-            lowered.instructions.push_back(loadHigh);
+            // High word is 0 for stack addresses in flat model
+            Instruction286 xorDx;
+            xorDx.mnemonic = "xor";
+            xorDx.operands.push_back("dx");
+            xorDx.operands.push_back("dx");
+            lowered.instructions.push_back(xorDx);
         } else if (ptrReg != "ax") {
             // Register operand: move to AX
             Instruction286 movAx;

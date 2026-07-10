@@ -333,6 +333,90 @@ std::vector<LoweredInstruction> lowerLoad(SelectorState& state,
     // Load value from memory
     // Operands: [0] = pointer to load from
     if (!irInst.operands.empty()) {
+        // Check if pointer is a global variable (starts with @)
+        std::string ptrName = irInst.operands[0].name;
+        if (!ptrName.empty() && ptrName[0] == '@') {
+                // Global variable: load its value
+                std::string globalName = ptrName.substr(1); // Remove @ prefix
+                // Convert .name to _name for NASM compatibility (matches CodeGen.cpp)
+                if (!globalName.empty() && globalName[0] == '.') {
+                    globalName[0] = '_';
+                }
+            
+            // Get result stack location
+            std::string resultStack = state.frame.getPhysReg(irInst.resultName);
+            if (resultStack == "ax" || resultStack == "bx" || resultStack == "cx" || resultStack == "dx") {
+                // Result is not on stack - allocate temp space
+                std::string tempSlot = state.frame.allocTemp(4, true);
+                resultStack = tempSlot;
+            }
+            
+            // Load address of global into BX
+            Instruction286 leaAddr;
+            leaAddr.mnemonic = "lea";
+            leaAddr.operands.push_back("bx");
+            leaAddr.operands.push_back("[" + globalName + "]");
+            lowered.instructions.push_back(leaAddr);
+            
+            // Check if this is a 32-bit load
+            bool is32 = irInst.resultType && irInst.resultType->bitWidth == 32;
+            
+            if (is32) {
+                // Load low word from [bx] into AX
+                Instruction286 loadLow;
+                loadLow.mnemonic = "mov";
+                loadLow.operands.push_back("ax");
+                loadLow.operands.push_back("[" + std::string("bx") + "]");
+                lowered.instructions.push_back(loadLow);
+                
+                // Store low word to result
+                Instruction286 storeLow;
+                storeLow.mnemonic = "mov";
+                storeLow.operands.push_back("[" + resultStack + "]");
+                storeLow.operands.push_back("ax");
+                lowered.instructions.push_back(storeLow);
+                
+                // Load high word from [bx+2] into DX
+                Instruction286 loadHigh;
+                loadHigh.mnemonic = "mov";
+                loadHigh.operands.push_back("dx");
+                loadHigh.operands.push_back("[" + std::string("bx+2") + "]");
+                lowered.instructions.push_back(loadHigh);
+                
+                // Store high word to result
+                std::string highOffset = state.frame.getHighBpOffset(resultStack);
+                Instruction286 storeHigh;
+                storeHigh.mnemonic = "mov";
+                storeHigh.operands.push_back("[" + highOffset + "]");
+                storeHigh.operands.push_back("dx");
+                lowered.instructions.push_back(storeHigh);
+            } else {
+                // 16-bit or 8-bit load
+                std::string destReg;
+                if (irInst.resultType && irInst.resultType->bitWidth == 8) {
+                    destReg = "ax";
+                } else {
+                    destReg = "bx";
+                }
+                
+                Instruction286 loadInst;
+                loadInst.mnemonic = "mov";
+                loadInst.operands.push_back(destReg);
+                if (irInst.resultType && irInst.resultType->bitWidth == 8) {
+                    loadInst.operands.push_back("byte [" + std::string("bx") + "]");
+                } else {
+                    loadInst.operands.push_back("[" + std::string("bx") + "]");
+                }
+                lowered.instructions.push_back(loadInst);
+            }
+            
+            // Update vreg mapping
+            state.frame.setPhysReg(irInst.resultName, resultStack);
+            
+            loweredVec.push_back(lowered);
+            return loweredVec;
+        }
+        
         std::string ptrReg = state.frame.getPhysReg(irInst.operands[0].name);
 
         // Check if ptrReg is a bp-relative address (contains "bp")

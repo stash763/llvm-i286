@@ -20,6 +20,7 @@ set(ANTLR4_RUNTIME_INCLUDE "${ANTLR4_RUNTIME_ROOT}/runtime/src")
 set(ANTLR4_RUNTIME_BUILD_DIR "${ANTLR4_RUNTIME_ROOT}/build")
 
 # ANTLR4 Tool (Java) for generating parsers
+# Path to the complete jar (built from antlr4/tool)
 set(ANTLR4_TOOL_JAR "${CMAKE_SOURCE_DIR}/antlr4/tool/target/antlr4-4.13.3-SNAPSHOT-complete.jar")
 
 # Generated parser sources directory
@@ -58,15 +59,19 @@ function(generate_antlr_grammar GRAMMAR_FILE OUTPUT_DIR)
         message(STATUS "Using existing generated parser files from ${OUTPUT_DIR}")
     else()
         # Tool available, regenerate parser
+        # Copy grammar to output dir so ANTLR doesn't create subdirectories
+        set(GRAMMAR_COPY "${OUTPUT_DIR}/${GRAMMAR_NAME}.g4")
         add_custom_command(
             OUTPUT ${GENERATED_SOURCES}
+            COMMAND ${CMAKE_COMMAND} -E copy ${GRAMMAR_FILE} ${GRAMMAR_COPY}
             COMMAND java -jar ${ANTLR4_TOOL_JAR}
                     -Dlanguage=Cpp
                     -o ${OUTPUT_DIR}
                     -package antlr::generated
                     -visitor
                     -no-listener
-                    ${GRAMMAR_FILE}
+                    ${GRAMMAR_COPY}
+            COMMAND ${CMAKE_COMMAND} -E remove ${GRAMMAR_COPY}
             DEPENDS ${GRAMMAR_FILE}
             COMMENT "Generating ANTLR4 parser for ${GRAMMAR_NAME}"
             VERBATIM
@@ -93,9 +98,11 @@ add_subdirectory(${ANTLR4_RUNTIME_ROOT} ${ANTLR4_RUNTIME_BUILD_DIR})
 # The static library target is named antlr4_static
 set(ANTLR4_RUNTIME_LIB_TARGET antlr4_static)
 
-# Generate LLVM IR Parser (if tool is available)
+# Generate LLVM IR Parser from local grammar copy
+# Grammar is at src/ir/grammar/LLVMIR.g4 (copied from grammars-v4/llvm-ir/)
+# Regenerate parser: java -jar ${ANTLR4_TOOL_JAR} -Dlanguage=Cpp -o ${GENERATED_PARSER_DIR} -package antlr::generated -visitor -no-listener ${CMAKE_SOURCE_DIR}/src/ir/grammar/LLVMIR.g4
 generate_antlr_grammar(
-    "${CMAKE_SOURCE_DIR}/grammars-v4/llvm-ir/LLVMIR.g4"
+    "${CMAKE_SOURCE_DIR}/src/ir/grammar/LLVMIR.g4"
     "${GENERATED_PARSER_DIR}"
 )
 
