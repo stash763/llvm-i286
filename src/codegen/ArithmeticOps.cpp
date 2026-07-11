@@ -605,7 +605,12 @@ std::vector<LoweredInstruction> lowerMul(SelectorState& state,
             }
 
             // IMUL second operand
-            imulInst.operands.push_back(op2);
+            // If op2 is a stack slot (bp-relative), wrap in brackets and add size
+            if (op2.find("bp+") != std::string::npos || op2.find("bp-") != std::string::npos) {
+                imulInst.operands.push_back("word [" + op2 + "]");
+            } else {
+                imulInst.operands.push_back(op2);
+            }
         } else {
             imulInst.operands.push_back("bx");
         }

@@ -835,7 +835,12 @@ std::vector<LoweredInstruction> lowerGetElementPtr(SelectorState& state,
                 Instruction286 movLow;
                 movLow.mnemonic = "mov";
                 movLow.operands.push_back("ax");
-                movLow.operands.push_back(baseReg);
+                // If baseReg is a stack slot (contains bp), wrap in brackets to load the VALUE
+                if (baseReg.find("bp") != std::string::npos) {
+                    movLow.operands.push_back("[" + baseReg + "]");
+                } else {
+                    movLow.operands.push_back(baseReg);
+                }
                 lowered.instructions.push_back(movLow);
                 // High word is 0 for register values (near pointer)
                 Instruction286 xorHigh;
