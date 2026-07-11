@@ -22,8 +22,16 @@ std::vector<LoweredInstruction> lowerTrunc(SelectorState& state,
         std::string srcReg = state.frame.getPhysReg(irInst.operands[0].name);
         std::string destReg = resultReg.empty() ? "ax" : resultReg;
 
-        // For now, just move the value (16-bit trunc is no-op on 16-bit target)
-        if (destReg != srcReg) {
+        bool srcIsMem = srcReg.find("bp") != std::string::npos;
+
+        // Load source into destReg if it's a memory location
+        if (srcIsMem) {
+            Instruction286 loadInst;
+            loadInst.mnemonic = "mov";
+            loadInst.operands.push_back(destReg);
+            loadInst.operands.push_back("[" + srcReg + "]");
+            lowered.instructions.push_back(loadInst);
+        } else if (destReg != srcReg) {
             Instruction286 movInst;
             movInst.mnemonic = "mov";
             movInst.operands.push_back(destReg);

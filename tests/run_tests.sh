@@ -61,6 +61,7 @@ mkdir -p "$OUTPUT_DIR"
 # Key = test name, Value = path to additional .c file(s) to link
 declare -A COMPANION_FILES
 # COMPANION_FILES[test_memcpy]="$TEST_DIR/test_memcpy_memcpy.c"
+COMPANION_FILES[test_printf]="$TEST_DIR/test_printf_companion.c"
 
 # Expected stdout output for each test
 declare -A EXPECTED_OUTPUT
@@ -82,10 +83,10 @@ EXPECTED_OUTPUT[test_strcmp]="0"
 EXPECTED_OUTPUT[test_memcmp]="0"
 EXPECTED_OUTPUT[test_isalpha]="1"
 EXPECTED_OUTPUT[test_mul_print]="32"
+EXPECTED_OUTPUT[test_printf]="0"
 
 # Tests that use unsupported features (expected to fail at compile or link time)
 declare -A EXPECTED_FAILURES
-EXPECTED_FAILURES[test_printf]=1
 EXPECTED_FAILURES[test_printf_simple]=1
 
 # Test counters

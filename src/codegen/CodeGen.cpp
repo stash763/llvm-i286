@@ -7,6 +7,7 @@
 #include "codegen/Emitter.h"
 
 #include <iostream>
+#include <set>
 
 namespace llvm_i286 {
 namespace codegen {
@@ -65,6 +66,14 @@ std::string CodeGen::generate(const ir::Module& module) {
     
     // Collect external function declarations
     std::vector<std::string> externFuncs;
+    // Build set of defined function names for filtering
+    std::set<std::string> definedFuncs;
+    for (const auto& func : module.functions) {
+        if (!func->isDeclaration) {
+            definedFuncs.insert(func->name);
+        }
+    }
+    
     for (const auto& func : module.functions) {
         if (func->isDeclaration) {
             // LLVM intrinsics are lowered to runtime calls
@@ -78,7 +87,10 @@ std::string CodeGen::generate(const ir::Module& module) {
             } else if (funcName == "llvm.va_end") {
                 funcName = "llvm_va_end";
             }
-            externFuncs.push_back(funcName);
+            // Only add as extern if not defined in this module
+            if (definedFuncs.find(funcName) == definedFuncs.end()) {
+                externFuncs.push_back(funcName);
+            }
         }
     }
     
