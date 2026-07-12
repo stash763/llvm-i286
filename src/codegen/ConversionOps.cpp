@@ -342,20 +342,39 @@ std::vector<LoweredInstruction> lowerPtrToInt(SelectorState& state,
         // Load the pointer value (32-bit) into AX:DX
         // If the pointer is in memory, load both words
         if (ptrReg.find("bp") != std::string::npos) {
-            // Memory operand: use MOV to load the VALUE of the pointer
-            // ptrReg is like "bp-18", we need mov ax, [bp-18]
-            Instruction286 movLow;
-            movLow.mnemonic = "mov";
-            movLow.operands.push_back("ax");
-            movLow.operands.push_back("[" + ptrReg + "]");
-            lowered.instructions.push_back(movLow);
+            // Check if this is an alloca result (address, not value)
+            // For alloca results, ptrReg IS the address - use lea to get it
+            bool ptrIsAlloca = state.frame.isAlloca(irInst.operands[0].name);
+            
+            if (ptrIsAlloca) {
+                // Alloca result: use lea to get the address
+                Instruction286 leaLow;
+                leaLow.mnemonic = "lea";
+                leaLow.operands.push_back("ax");
+                leaLow.operands.push_back("[" + ptrReg + "]");
+                lowered.instructions.push_back(leaLow);
+                
+                // High word is SS selector (for far pointer in OS/2 1.x segmented model)
+                Instruction286 pushSelector;
+                pushSelector.mnemonic = "mov";
+                pushSelector.operands.push_back("dx");
+                pushSelector.operands.push_back("ss");
+                lowered.instructions.push_back(pushSelector);
+            } else {
+                // Regular pointer: load the VALUE stored at the address
+                Instruction286 movLow;
+                movLow.mnemonic = "mov";
+                movLow.operands.push_back("ax");
+                movLow.operands.push_back("[" + ptrReg + "]");
+                lowered.instructions.push_back(movLow);
 
-            // High word is 0 for stack addresses in flat model
-            Instruction286 xorDx;
-            xorDx.mnemonic = "xor";
-            xorDx.operands.push_back("dx");
-            xorDx.operands.push_back("dx");
-            lowered.instructions.push_back(xorDx);
+                // High word is 0 for stack addresses in flat model
+                Instruction286 xorDx;
+                xorDx.mnemonic = "xor";
+                xorDx.operands.push_back("dx");
+                xorDx.operands.push_back("dx");
+                lowered.instructions.push_back(xorDx);
+            }
         } else if (ptrReg != "ax") {
             // Register operand: move to AX
             Instruction286 movAx;

@@ -635,6 +635,11 @@ std::unique_ptr<Instruction> IrVisitor::parseInstruction(LLVMIRParser::ValueInst
             if (ptr) {
                 ptrOp.name = ptr->getText(); // Preserve % prefix for vreg lookup
             }
+            // Set the operand type to match the result type (ptr)
+            ptrOp.type = std::make_unique<Type>();
+            ptrOp.type->kind = TypeKind::Pointer;
+            ptrOp.type->elementType = Type::makeVoid();
+            ptrOp.type->bitWidth = 32;
             inst->operands.push_back(std::move(ptrOp));
         }
     }
@@ -787,6 +792,13 @@ std::unique_ptr<Instruction> IrVisitor::parseInstruction(LLVMIRParser::ValueInst
                     // Preserve % prefix for vreg references so we can distinguish
                     // vreg names (like "%4") from constants (like "4")
                     inst->callArgs.push_back(argText);
+                    
+                    // Track whether this argument is a pointer type
+                    bool isPtr = false;
+                    if (arg->concreteType()) {
+                        isPtr = (arg->concreteType()->pointerType() != nullptr);
+                    }
+                    inst->callArgKinds.push_back(isPtr);
                 }
             }
         }

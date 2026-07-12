@@ -67,6 +67,18 @@ std::vector<LoweredInstruction> lowerCall(SelectorState& state,
     if (isLLVMMemcpy && args.size() > 3) {
         args.pop_back();
     }
+    
+    // For llvm.va_start: add synthetic second argument (address of last named param)
+    // Our C implementation expects: llvm_va_start(void *ap, void *last_arg)
+    // The last_arg should point to the first parameter of the calling function
+    // In the calling function's stack frame: [bp+4] = first param
+    if (isLLVAVaStart) {
+        // Add synthetic argument: address of last named parameter (bp+4)
+        args.push_back("bp_plus_4_sentinel");
+        // We need a local copy of callArgKinds to modify (since irInst is const)
+        // The synthetic arg is a far pointer (32-bit)
+        // We'll handle this in the stack cleanup by checking for synthetic args
+    }
 
     // Push arguments right-to-left
     for (int i = static_cast<int>(args.size()) - 1; i >= 0; i--) {
@@ -83,6 +95,28 @@ std::vector<LoweredInstruction> lowerCall(SelectorState& state,
             pushZero.mnemonic = "push";
             pushZero.operands.push_back("0");
             lowered.instructions.push_back(pushZero);
+            continue;
+        }
+        
+        // Handle synthetic bp+4 sentinel for llvm_va_start
+        if (argName == "bp_plus_4_sentinel") {
+            // Push the far pointer address of the last named parameter (bp+4)
+            // High word = SS (segment selector for stack), low word = offset
+            Instruction286 leaArg;
+            leaArg.mnemonic = "lea";
+            leaArg.operands.push_back("ax");
+            leaArg.operands.push_back("[bp+4]");
+            lowered.instructions.push_back(leaArg);
+            
+            Instruction286 pushHigh;
+            pushHigh.mnemonic = "push";
+            pushHigh.operands.push_back("SS");
+            lowered.instructions.push_back(pushHigh);
+            
+            Instruction286 pushLow;
+            pushLow.mnemonic = "push";
+            pushLow.operands.push_back("ax");
+            lowered.instructions.push_back(pushLow);
             continue;
         }
 
@@ -151,6 +185,10 @@ std::vector<LoweredInstruction> lowerCall(SelectorState& state,
             // Use the function's parameter types
             if (i >= 0 && i < (int)declIt->second.size()) {
                 is32 = (declIt->second[i] == 32);
+            } else if (i >= (int)declIt->second.size()) {
+                // Argument beyond the fixed parameter count (variadic function)
+                // Fall back to result type or assume 32-bit
+                is32 = irInst.resultType ? (irInst.resultType->bitWidth == 32) : true;
             }
         } else if (irInst.resultType) {
             // Fallback: assume all arguments are the same type as result
@@ -158,9 +196,25 @@ std::vector<LoweredInstruction> lowerCall(SelectorState& state,
         }
 
         if (is32) {
-            // 32-bit argument: push high word first, then low word
+            // 32-bit argument: push high word first, then low word (little-endian stack layout)
+            // Check if this is a pointer argument (push ADDRESS, not DATA)
+            bool isPtrArg = (i >= 0 && i < (int)irInst.callArgKinds.size()) ? irInst.callArgKinds[i] : false;
+            
             if (isGlobal) {
-                if (isPtrToIntExpr) {
+                if (isPtrArg) {
+                    // Pointer argument - push the far pointer ADDRESS (seg:offset)
+                    // Push selector (high word) first, then offset (low word)
+                    // Stack layout: [offset][selector] (little-endian)
+                    Instruction286 pushHigh;
+                    pushHigh.mnemonic = "push";
+                    pushHigh.operands.push_back("seg " + nasmName);
+                    lowered.instructions.push_back(pushHigh);
+                    
+                    Instruction286 pushLow;
+                    pushLow.mnemonic = "push";
+                    pushLow.operands.push_back(nasmName);
+                    lowered.instructions.push_back(pushLow);
+                } else if (isPtrToIntExpr) {
                     // ptrtoint constant expression - push address of global
                     // High word = 0, low word = address (offset)
                     Instruction286 leaLow;
@@ -188,6 +242,68 @@ std::vector<LoweredInstruction> lowerCall(SelectorState& state,
                     Instruction286 pushLow;
                     pushLow.mnemonic = "push";
                     pushLow.operands.push_back("word [" + nasmName + "]");
+                    lowered.instructions.push_back(pushLow);
+                }
+            } else if (isPtrArg && !isGlobal) {
+                // Pointer vreg argument - push the far pointer ADDRESS (seg:offset)
+                // Get the physical register for the pointer value
+                std::string argReg = state.frame.getPhysReg(vregLookupName);
+                
+                if (argReg.find("bp") != std::string::npos) {
+                    // Check if this is an alloca: the stack offset IS the pointer value
+                    bool argIsAlloca = state.frame.isAlloca(vregLookupName);
+                    if (argIsAlloca) {
+                        // Alloca result: the stack offset IS the pointer value
+                        // Push SS (segment) and bp+offset (offset)
+                        int offset = 0;
+                        std::string offsetStr = argReg.substr(2); // Remove "bp"
+                        if (!offsetStr.empty()) {
+                            try { offset = std::stoi(offsetStr); } catch (...) {}
+                        }
+                        Instruction286 leaAx;
+                        leaAx.mnemonic = "lea";
+                        leaAx.operands.push_back("ax");
+                        if (offset < 0) {
+                            leaAx.operands.push_back("[" + std::string("bp") + std::to_string(offset) + "]");
+                        } else if (offset > 0) {
+                            leaAx.operands.push_back("[" + std::string("bp+") + std::to_string(offset) + "]");
+                        } else {
+                            leaAx.operands.push_back("[" + std::string("bp") + "]");
+                        }
+                        lowered.instructions.push_back(leaAx);
+
+                        Instruction286 pushHigh;
+                        pushHigh.mnemonic = "push";
+                        pushHigh.operands.push_back("ss");
+                        lowered.instructions.push_back(pushHigh);
+
+                        Instruction286 pushLow;
+                        pushLow.mnemonic = "push";
+                        pushLow.operands.push_back("ax");
+                        lowered.instructions.push_back(pushLow);
+                    } else {
+                        // Pointer value stored on stack - push both words
+                        // Push selector (high word) first, then offset (low word)
+                        Instruction286 pushHigh;
+                        pushHigh.mnemonic = "push";
+                        pushHigh.operands.push_back("word [" + argReg + "+2]");
+                        lowered.instructions.push_back(pushHigh);
+                        
+                        Instruction286 pushLow;
+                        pushLow.mnemonic = "push";
+                        pushLow.operands.push_back("word [" + argReg + "]");
+                        lowered.instructions.push_back(pushLow);
+                    }
+                } else {
+                    // Pointer value in a register - push DX (high), then register (low)
+                    Instruction286 pushHigh;
+                    pushHigh.mnemonic = "push";
+                    pushHigh.operands.push_back("dx");
+                    lowered.instructions.push_back(pushHigh);
+                    
+                    Instruction286 pushLow;
+                    pushLow.mnemonic = "push";
+                    pushLow.operands.push_back(argReg);
                     lowered.instructions.push_back(pushLow);
                 }
             } else if (isConst) {
@@ -308,25 +424,89 @@ std::vector<LoweredInstruction> lowerCall(SelectorState& state,
                 pushInst.operands.push_back("ax");
                 lowered.instructions.push_back(pushInst);
             } else {
-                std::string argReg = state.frame.getPhysReg(vregLookupName);
-                if (argReg.find("bp") != std::string::npos) {
-                    // Memory operand - load into AX first
-                    Instruction286 loadInst;
-                    loadInst.mnemonic = "mov";
-                    loadInst.operands.push_back("ax");
-                    loadInst.operands.push_back("[" + argReg + "]");
-                    lowered.instructions.push_back(loadInst);
+                // Check if this is a pointer argument (push ADDRESS, not DATA)
+                bool isPtrArg16 = (i >= 0 && i < (int)irInst.callArgKinds.size()) ? irInst.callArgKinds[i] : false;
+                
+                if (isPtrArg16) {
+                    // Pointer argument - push the far pointer ADDRESS (seg:offset)
+                    std::string argReg = state.frame.getPhysReg(vregLookupName);
+                    if (argReg.find("bp") != std::string::npos) {
+                        // Check if this is an alloca: the stack offset IS the pointer value
+                        bool argIsAlloca = state.frame.isAlloca(vregLookupName);
+                        if (argIsAlloca) {
+                            // Alloca result: the stack offset IS the pointer value
+                            int offset = 0;
+                            std::string offsetStr = argReg.substr(2); // Remove "bp"
+                            if (!offsetStr.empty()) {
+                                try { offset = std::stoi(offsetStr); } catch (...) {}
+                            }
+                            Instruction286 leaAx;
+                            leaAx.mnemonic = "lea";
+                            leaAx.operands.push_back("ax");
+                            if (offset < 0) {
+                                leaAx.operands.push_back("[" + std::string("bp") + std::to_string(offset) + "]");
+                            } else if (offset > 0) {
+                                leaAx.operands.push_back("[" + std::string("bp+") + std::to_string(offset) + "]");
+                            } else {
+                                leaAx.operands.push_back("[" + std::string("bp") + "]");
+                            }
+                            lowered.instructions.push_back(leaAx);
 
-                    Instruction286 pushInst;
-                    pushInst.mnemonic = "push";
-                    pushInst.operands.push_back("ax");
-                    lowered.instructions.push_back(pushInst);
+                            Instruction286 pushHigh;
+                            pushHigh.mnemonic = "push";
+                            pushHigh.operands.push_back("ss");
+                            lowered.instructions.push_back(pushHigh);
+
+                            Instruction286 pushLow;
+                            pushLow.mnemonic = "push";
+                            pushLow.operands.push_back("ax");
+                            lowered.instructions.push_back(pushLow);
+                        } else {
+                            // Pointer value stored on stack - push both words
+                            // Push selector (high word) first, then offset (low word)
+                            Instruction286 pushHigh;
+                            pushHigh.mnemonic = "push";
+                            pushHigh.operands.push_back("word [" + argReg + "+2]");
+                            lowered.instructions.push_back(pushHigh);
+                            
+                            Instruction286 pushLow;
+                            pushLow.mnemonic = "push";
+                            pushLow.operands.push_back("word [" + argReg + "]");
+                            lowered.instructions.push_back(pushLow);
+                        }
+                    } else {
+                        // Pointer value in a register - push DX (high), then register (low)
+                        Instruction286 pushHigh;
+                        pushHigh.mnemonic = "push";
+                        pushHigh.operands.push_back("dx");
+                        lowered.instructions.push_back(pushHigh);
+                        
+                        Instruction286 pushLow;
+                        pushLow.mnemonic = "push";
+                        pushLow.operands.push_back(argReg);
+                        lowered.instructions.push_back(pushLow);
+                    }
                 } else {
-                    // Register operand - push directly
-                    Instruction286 pushInst;
-                    pushInst.mnemonic = "push";
-                    pushInst.operands.push_back(argReg);
-                    lowered.instructions.push_back(pushInst);
+                    std::string argReg = state.frame.getPhysReg(vregLookupName);
+                    if (argReg.find("bp") != std::string::npos) {
+                        // Memory operand - load into AX first
+                        Instruction286 loadInst;
+                        loadInst.mnemonic = "mov";
+                        loadInst.operands.push_back("ax");
+                        loadInst.operands.push_back("[" + argReg + "]");
+                        lowered.instructions.push_back(loadInst);
+
+                        Instruction286 pushInst;
+                        pushInst.mnemonic = "push";
+                        pushInst.operands.push_back("ax");
+                        lowered.instructions.push_back(pushInst);
+                    } else {
+                        // Register operand - push directly
+                        Instruction286 pushInst;
+                        pushInst.mnemonic = "push";
+                        pushInst.operands.push_back(argReg);
+                        lowered.instructions.push_back(pushInst);
+                    }
                 }
             }
         }
@@ -370,13 +550,25 @@ std::vector<LoweredInstruction> lowerCall(SelectorState& state,
         int stackBytes = 0;
         for (size_t argIdx = 0; argIdx < args.size(); argIdx++) {
             bool isArg32 = false;
-            auto declIt = state.funcParamBitWidths.find(callee);
-            if (declIt != state.funcParamBitWidths.end()) {
-                if (argIdx < declIt->second.size()) {
-                    isArg32 = (declIt->second[argIdx] == 32);
+            // Check callArgKinds first (true = pointer arg, which is 32-bit)
+            if (argIdx < irInst.callArgKinds.size() && irInst.callArgKinds[argIdx]) {
+                isArg32 = true;
+            } else if (isLLVAVaStart && argIdx == args.size() - 1) {
+                // Synthetic last_arg argument for llvm_va_start is a far pointer (32-bit)
+                isArg32 = true;
+            } else {
+                // Use funcParamBitWidths
+                auto declIt = state.funcParamBitWidths.find(callee);
+                if (declIt != state.funcParamBitWidths.end()) {
+                    if (argIdx < declIt->second.size()) {
+                        isArg32 = (declIt->second[argIdx] == 32);
+                    } else {
+                        // Beyond fixed param count (variadic) - assume 32-bit
+                        isArg32 = irInst.resultType ? (irInst.resultType->bitWidth == 32) : true;
+                    }
+                } else if (irInst.resultType) {
+                    isArg32 = irInst.resultType->bitWidth == 32;
                 }
-            } else if (irInst.resultType) {
-                isArg32 = irInst.resultType->bitWidth == 32;
             }
             stackBytes += isArg32 ? 4 : 2;
         }

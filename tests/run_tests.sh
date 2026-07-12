@@ -83,7 +83,8 @@ EXPECTED_OUTPUT[test_strcmp]="0"
 EXPECTED_OUTPUT[test_memcmp]="0"
 EXPECTED_OUTPUT[test_isalpha]="1"
 EXPECTED_OUTPUT[test_mul_print]="32"
-EXPECTED_OUTPUT[test_printf]="0"
+EXPECTED_OUTPUT[test_printf]="Hello, world! x = 42"
+EXPECTED_OUTPUT[test_syscall_basic]="XY1"
 
 # Tests that use unsupported features (expected to fail at compile or link time)
 declare -A EXPECTED_FAILURES

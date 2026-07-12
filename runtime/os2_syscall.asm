@@ -22,6 +22,7 @@ segment _DATA CLASS=DATA
 
 _syscall_wlen dw 0
 byte_msg db 'X'
+_debug_char db '?'
 
 segment _TEXT CLASS=CODE
 global __os2_syscall2
@@ -185,18 +186,20 @@ __os2_syscall3:
     mov di, [bp+14]     ; buf selector (high word)
     mov cx, [bp+16]     ; count (low word)
     
-    ; Call DosWrite(hf, buf_selector, buf_offset, count, wlen_selector, wlen_offset)
+    ; Call DosWrite(hf, buf_selector:buf_offset, count, wlen_selector:wlen_offset)
+    ; OS/2 far pointers are passed selector:offset (high word first, then low word)
     push ax             ; hf
-    push di             ; buf selector
-    push si             ; buf offset
+    push di             ; buf selector (HIGH word first)
+    push si             ; buf offset (LOW word second)
     push cx             ; count
-    push ds             ; wlen selector
-    push _syscall_wlen  ; wlen offset
+    push ds             ; wlen selector (HIGH word first)
+    push _syscall_wlen  ; wlen offset (LOW word second)
     call far DOSWRITE
     ; DOSWRITE cleans up the stack (Pascal convention, ret 12)
     
-    ; Return count in AX
+    ; Return count in AX (zero-extend to 32-bit DX:AX)
     mov ax, cx
+    xor dx, dx
     
     pop di
     pop si
@@ -210,14 +213,20 @@ __os2_syscall3:
     ; a3 = count (at [bp+16])
     
     mov ax, [bp+8]    ; fd / file handle
+    mov si, [bp+12]   ; buf offset (low word)
+    mov di, [bp+14]   ; buf selector (high word)
+    mov cx, [bp+16]   ; count (low word)
     
-    push 0            ; bytesRead (placeholder)
-    push word [bp+16] ; count (low word)
-    push ds           ; buf segment
-    push word [bp+12] ; buf offset (low word)
+    ; Call DosRead(hf, buf_selector:buf_offset, count, bytesRead_selector:bytesRead_offset)
+    ; OS/2 far pointers are passed selector:offset (high word first, then low word)
+    push 0            ; bytesRead offset (placeholder, low word)
+    push ds           ; bytesRead selector (high word)
+    push cx           ; count
+    push di           ; buf selector (high word first)
+    push si           ; buf offset (low word second)
     push ax           ; hf
     call far DOSREAD
-    add sp, 10        ; cleanup 5 args
+    add sp, 12        ; cleanup 6 args
     
     ; Return value in AX = bytes read
     cwd

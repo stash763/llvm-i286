@@ -195,6 +195,8 @@ struct Instruction {
     // For call
     std::string calleeName;
     std::vector<std::string> callArgs;
+    // Track whether each call arg is a pointer (true) or value (false)
+    std::vector<bool> callArgKinds; // true = pointer, false = value
 };
 
 struct BasicBlock {
