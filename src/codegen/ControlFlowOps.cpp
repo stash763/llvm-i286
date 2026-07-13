@@ -186,6 +186,13 @@ std::vector<LoweredInstruction> lowerCondBrTerm(SelectorState& state,
         }
         std::string nearTrueLabel = prefix + "bb_" + irInst.operands[1].name;
 
+        // Test the condition value to set flags
+        Instruction286 testCond;
+        testCond.mnemonic = "test";
+        testCond.operands.push_back("ax");
+        testCond.operands.push_back("ax");
+        lowered.instructions.push_back(testCond);
+
         Instruction286 nearTrueInst;
         nearTrueInst.mnemonic = "jne";
         nearTrueInst.operands.push_back(nearTrueLabel);

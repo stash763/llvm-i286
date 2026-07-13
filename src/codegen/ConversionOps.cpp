@@ -362,18 +362,32 @@ std::vector<LoweredInstruction> lowerPtrToInt(SelectorState& state,
                 lowered.instructions.push_back(pushSelector);
             } else {
                 // Regular pointer: load the VALUE stored at the address
+                // The value is a 32-bit far pointer (offset:selector), load both words
+                // to preserve the full pointer representation for ptrtoint.
                 Instruction286 movLow;
                 movLow.mnemonic = "mov";
                 movLow.operands.push_back("ax");
                 movLow.operands.push_back("[" + ptrReg + "]");
                 lowered.instructions.push_back(movLow);
 
-                // High word is 0 for stack addresses in flat model
-                Instruction286 xorDx;
-                xorDx.mnemonic = "xor";
-                xorDx.operands.push_back("dx");
-                xorDx.operands.push_back("dx");
-                lowered.instructions.push_back(xorDx);
+                // Load high word (selector) from ptrReg+2
+                Instruction286 movHigh;
+                movHigh.mnemonic = "mov";
+                movHigh.operands.push_back("dx");
+                // Check if ptrReg has bp+offset form for high word load
+                if (ptrReg.find("bp") != std::string::npos) {
+                    int offset = 0;
+                    std::string offsetStr = ptrReg.substr(2);
+                    if (!offsetStr.empty()) {
+                        try { offset = std::stoi(offsetStr); } catch (...) {}
+                    }
+                    int highOffset = offset + 2;
+                    std::string offsetStr2 = (highOffset >= 0) ? ("+" + std::to_string(highOffset)) : std::to_string(highOffset);
+                    movHigh.operands.push_back("[" + std::string("bp") + offsetStr2 + "]");
+                } else {
+                    movHigh.operands.push_back("[" + ptrReg + "+2]");
+                }
+                lowered.instructions.push_back(movHigh);
             }
         } else if (ptrReg != "ax") {
             // Register operand: move to AX

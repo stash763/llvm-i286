@@ -1,7 +1,9 @@
-extern void printnum(char* buffer, int buffersize, int value);
+extern long __os2_syscall3(long n, long a1, long a2, long a3);
 
 int main(void) {
-    char buf[16];
-    printnum(buf, 16, 0);
+    char buf[4];
+    buf[0] = '0';
+    buf[1] = 0;
+    __os2_syscall3(2, 1, (long)buf, 1);
     return 0;
 }

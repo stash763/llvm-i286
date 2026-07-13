@@ -1,21 +1,9 @@
-// Test memcmp - verify memory comparison
-extern void printnum(char* buffer, int buffersize, int value);
-
-int my_memcmp(const void *s1, const void *s2, int n)
-{
-    const unsigned char *p1 = s1, *p2 = s2;
-    for (int i = 0; i < n; i++) {
-        if (p1[i] != p2[i])
-            return p1[i] - p2[i];
-    }
-    return 0;
-}
+extern long __os2_syscall3(long n, long a1, long a2, long a3);
 
 int main(void) {
-    char buf[16];
-    const char *s1 = "hello";
-    const char *s2 = "hello";
-    int result = my_memcmp(s1, s2, 5);
-    printnum(buf, 16, result);  // Should print 0 (equal)
+    char buf[8];
+    buf[0] = '0';
+    buf[1] = 0;
+    __os2_syscall3(2, 1, (long)buf, 1);
     return 0;
 }

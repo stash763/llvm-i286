@@ -61,7 +61,7 @@ mkdir -p "$OUTPUT_DIR"
 # Key = test name, Value = path to additional .c file(s) to link
 declare -A COMPANION_FILES
 # COMPANION_FILES[test_memcpy]="$TEST_DIR/test_memcpy_memcpy.c"
-COMPANION_FILES[test_printf]="$TEST_DIR/test_printf_companion.c"
+# COMPANION_FILES[test_printf]="$TEST_DIR/test_printf_companion.c"
 
 # Expected stdout output for each test
 declare -A EXPECTED_OUTPUT
@@ -148,13 +148,15 @@ run_test() {
     # Step 3: Compare output against expected value
     local expected="${EXPECTED_OUTPUT[$test_name]}"
     local trimmed_output
+    local trimmed_expected
     trimmed_output=$(echo "$output" | tr -d '[:space:]')
+    trimmed_expected=$(echo "$expected" | tr -d '[:space:]')
 
     if [ -z "$expected" ]; then
         # No expected output defined — just check if it ran without error
         echo -e "${GREEN}PASS (linked OK, no output check)${NC}"
         PASS=$((PASS + 1))
-    elif [ "$trimmed_output" = "$expected" ]; then
+    elif [ "$trimmed_output" = "$trimmed_expected" ]; then
         echo -e "${GREEN}PASS (output: $output)${NC}"
         PASS=$((PASS + 1))
     else

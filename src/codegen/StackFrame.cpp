@@ -105,6 +105,11 @@ void StackFrame::computeLayout() {
                 paramOffset += slot.byteSize;
             }
             // Register-allocated params don't get stack offsets
+            // Params are NOT marked as SS-derived because the pointer VALUE
+            // stored in the param slot could point to DS or SS memory.
+            // The slot itself is on SS, but we access it via [bp+4] which
+            // defaults to SS via bp. We don't propagate SS-derived to the
+            // loaded value.
         }
     }
 
@@ -118,6 +123,11 @@ void StackFrame::computeLayout() {
             nextLocalOffset -= slot.byteSize;
             slot.bpOffset = nextLocalOffset;
             localsSize += slot.byteSize;
+            // Allocas are SS-derived (allocated on current stack frame)
+            // When we store to or load from an alloca, we use [ss:bp+offset]
+            if (slot.kind == SlotKind::Alloca) {
+                slot.ssDerived = true;
+            }
         }
     }
 
@@ -239,6 +249,14 @@ bool StackFrame::isParam(const std::string& vregName) const {
         return false;
     }
     return slots[it->second].kind == SlotKind::Param;
+}
+
+bool StackFrame::isSSDerived(const std::string& vregName) const {
+    auto it = vregToSlotIndex.find(vregName);
+    if (it == vregToSlotIndex.end()) {
+        return false;
+    }
+    return slots[it->second].ssDerived;
 }
 
 std::string StackFrame::getParamReg(const std::string& vregName) const {

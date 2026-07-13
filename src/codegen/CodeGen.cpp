@@ -77,15 +77,14 @@ std::string CodeGen::generate(const ir::Module& module) {
     for (const auto& func : module.functions) {
         if (func->isDeclaration) {
             // LLVM intrinsics are lowered to runtime calls
-            // Rename llvm.memcpy -> memcpy, llvm.va_start -> llvm_va_start, llvm.va_end -> llvm_va_end
+            // Rename llvm.memcpy -> memcpy
+            // Skip llvm.va_start and llvm.va_end (generated inline by codegen)
             std::string funcName = func->name;
             if (funcName.find("llvm.memcpy") != std::string::npos) {
                 continue; // Skip llvm.memcpy entirely
             }
-            if (funcName == "llvm.va_start") {
-                funcName = "llvm_va_start";
-            } else if (funcName == "llvm.va_end") {
-                funcName = "llvm_va_end";
+            if (funcName == "llvm.va_start" || funcName == "llvm.va_end") {
+                continue; // Skip - generated inline
             }
             // Only add as extern if not defined in this module
             if (definedFuncs.find(funcName) == definedFuncs.end()) {
@@ -328,8 +327,6 @@ std::string CodeGen::generate(const ir::Module& module) {
     // These must match the tested runtime in ./runtime/
     externFuncs.push_back("_MultiplyI32");
     externFuncs.push_back("_DivideI32");
-    externFuncs.push_back("printnum");
-    externFuncs.push_back("itoa");
     
     // Wrap in module structure
     return emitter.emitModule(

@@ -544,6 +544,90 @@ std::unique_ptr<Instruction> IrVisitor::parseInstruction(LLVMIRParser::ValueInst
             inst->operands.push_back(std::move(op2));
         }
     }
+    // Parse operands for sdiv instruction
+    else if (ctx->sDivInst()) {
+        inst->opcode = Opcode::SDiv;
+        auto *divCtx = ctx->sDivInst();
+        if (divCtx->typeValue() && divCtx->value()) {
+            std::string typeText = divCtx->typeValue()->getText();
+            if (typeText.substr(0, 1) == "i") {
+                size_t spacePos = typeText.find(' ');
+                std::string typeStr = spacePos != std::string::npos ? typeText.substr(0, spacePos) : typeText;
+                inst->resultType = Type::makeInteger(parseIntWidth(typeStr));
+            }
+            
+            Operand op1;
+            op1.name = divCtx->typeValue()->value() ? divCtx->typeValue()->value()->getText() : "";
+            inst->operands.push_back(std::move(op1));
+            
+            Operand op2;
+            op2.name = divCtx->value()->getText();
+            inst->operands.push_back(std::move(op2));
+        }
+    }
+    // Parse operands for udiv instruction
+    else if (ctx->uDivInst()) {
+        inst->opcode = Opcode::UDiv;
+        auto *divCtx = ctx->uDivInst();
+        if (divCtx->typeValue() && divCtx->value()) {
+            std::string typeText = divCtx->typeValue()->getText();
+            if (typeText.substr(0, 1) == "i") {
+                size_t spacePos = typeText.find(' ');
+                std::string typeStr = spacePos != std::string::npos ? typeText.substr(0, spacePos) : typeText;
+                inst->resultType = Type::makeInteger(parseIntWidth(typeStr));
+            }
+            
+            Operand op1;
+            op1.name = divCtx->typeValue()->value() ? divCtx->typeValue()->value()->getText() : "";
+            inst->operands.push_back(std::move(op1));
+            
+            Operand op2;
+            op2.name = divCtx->value()->getText();
+            inst->operands.push_back(std::move(op2));
+        }
+    }
+    // Parse operands for srem instruction
+    else if (ctx->sRemInst()) {
+        inst->opcode = Opcode::SRem;
+        auto *remCtx = ctx->sRemInst();
+        if (remCtx->typeValue() && remCtx->value()) {
+            std::string typeText = remCtx->typeValue()->getText();
+            if (typeText.substr(0, 1) == "i") {
+                size_t spacePos = typeText.find(' ');
+                std::string typeStr = spacePos != std::string::npos ? typeText.substr(0, spacePos) : typeText;
+                inst->resultType = Type::makeInteger(parseIntWidth(typeStr));
+            }
+            
+            Operand op1;
+            op1.name = remCtx->typeValue()->value() ? remCtx->typeValue()->value()->getText() : "";
+            inst->operands.push_back(std::move(op1));
+            
+            Operand op2;
+            op2.name = remCtx->value()->getText();
+            inst->operands.push_back(std::move(op2));
+        }
+    }
+    // Parse operands for urem instruction
+    else if (ctx->uRemInst()) {
+        inst->opcode = Opcode::URem;
+        auto *remCtx = ctx->uRemInst();
+        if (remCtx->typeValue() && remCtx->value()) {
+            std::string typeText = remCtx->typeValue()->getText();
+            if (typeText.substr(0, 1) == "i") {
+                size_t spacePos = typeText.find(' ');
+                std::string typeStr = spacePos != std::string::npos ? typeText.substr(0, spacePos) : typeText;
+                inst->resultType = Type::makeInteger(parseIntWidth(typeStr));
+            }
+            
+            Operand op1;
+            op1.name = remCtx->typeValue()->value() ? remCtx->typeValue()->value()->getText() : "";
+            inst->operands.push_back(std::move(op1));
+            
+            Operand op2;
+            op2.name = remCtx->value()->getText();
+            inst->operands.push_back(std::move(op2));
+        }
+    }
     // Parse alloca instruction
     else if (ctx->allocaInst()) {
         inst->opcode = Opcode::Alloca;

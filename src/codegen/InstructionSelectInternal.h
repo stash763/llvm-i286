@@ -36,6 +36,10 @@ struct SelectorState {
     // Alias map: maps alias name to target name (for weak_alias resolution)
     std::map<std::string, std::string> aliasMap;
 
+    // Set of vreg names that are SS-derived pointers (point into SS segment)
+    // Propagated through Load (when loading through SS-derived pointer), GEP, inttoptr, ptrtoint
+    std::set<std::string> ssDerivedPtrVregs;
+
     // Counter for generating unique labels
     int labelCounter = 0;
 

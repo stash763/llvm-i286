@@ -36,6 +36,7 @@ struct SlotInfo {
     bool is32bit;
     SlotKind kind;
     std::string paramReg; // for Param slots: "bx"/"si"/"di" or "" if on stack
+    bool ssDerived = false; // true if this slot holds SS-derived data (allocas, params)
 };
 
 // Central stack frame manager
@@ -98,6 +99,9 @@ public:
 
     // Check if a vreg is a function parameter
     bool isParam(const std::string& vregName) const;
+
+    // Check if a vreg's slot is SS-derived (holds data from SS segment)
+    bool isSSDerived(const std::string& vregName) const;
 
     // Get the physical register for a parameter (if register-allocated)
     std::string getParamReg(const std::string& vregName) const;

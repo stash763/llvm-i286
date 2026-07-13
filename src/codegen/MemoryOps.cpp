@@ -61,6 +61,12 @@ std::vector<LoweredInstruction> lowerStore(SelectorState& state,
         // Check if the pointer is an alloca result (ADDRESS, not VALUE)
         bool ptrIsAlloca = state.frame.isAlloca(ptrName);
 
+        // Determine if pointer is SS-derived (pointers through SS-derived pointers)
+        // SS-derived pointers need [ss:bx], DS-derived pointers need [bx]
+        // Note: allocas are SS-derived for STORE but NOT for LOAD of pointer values
+        // We only track SS-derived status for POINTER VALUES, not for slots
+        bool ptrIsSS = state.ssDerivedPtrVregs.count(ptrName) > 0;
+
         // Check if this is a 32-bit store
         // Check the type being stored (resultType) first, then fall back to vreg marking
         bool is32 = false;
@@ -192,13 +198,12 @@ std::vector<LoweredInstruction> lowerStore(SelectorState& state,
             }
 
          // For non-alloca pointers, load the address to BX for dereferencing
-            // In OS/2 1.x segmented memory model, far pointers have (selector:offset)
-            // If selector is 0, use [bx] with DS (assumes DS=DGROUP)
-            // If selector is non-zero, load ES with selector and use es:[bx]
+            // Determine segment override based on SS-derived status
+            std::string segPrefix = ptrIsSS ? "ss:" : "";
             std::string dest;
             if (ptrReg.find("bp") != std::string::npos && ptrIsAlloca) {
-                // Alloca result: stack location IS the address
-                dest = "[" + ptrReg + "]";
+                // Alloca result: stack location IS the address (SS-derived)
+                dest = "[ss:" + ptrReg + "]";
             } else if (ptrReg.find("bp") != std::string::npos) {
                 // Non-alloca: load the pointer offset (low word) to BX
                 Instruction286 loadAddr;
@@ -221,10 +226,8 @@ std::vector<LoweredInstruction> lowerStore(SelectorState& state,
                     selectorAddr = ptrReg + "+2";
                 }
 
-                // Load selector value, and load ES if it's non-zero
-                // For now, assume DS=DGROUP and just use [bx]
-                // (This works for most cases where the selector is 0 or DGROUP)
-                dest = "[" + std::string("bx") + "]";
+                // Use [ss:bx] for SS-derived, [bx] for DS-derived
+                dest = "[" + segPrefix + "bx]";
             } else {
                 dest = ptrReg;
             }
@@ -241,7 +244,7 @@ std::vector<LoweredInstruction> lowerStore(SelectorState& state,
             Instruction286 storeHigh;
             storeHigh.mnemonic = "mov";
             if (ptrIsAlloca && ptrReg.find("bp") != std::string::npos) {
-                // Extract offset from ptrReg (e.g., "bp-10" -> -10)
+                // Alloca: stack location IS the address (SS-derived)
                 int offset = 0;
                 std::string offsetStr = ptrReg.substr(2); // Remove "bp"
                 if (!offsetStr.empty()) {
@@ -249,10 +252,10 @@ std::vector<LoweredInstruction> lowerStore(SelectorState& state,
                 }
                 int newOffset = offset + 2;
                 std::string offsetStr2 = (newOffset >= 0) ? ("+" + std::to_string(newOffset)) : std::to_string(newOffset);
-                storeHigh.operands.push_back("[" + std::string("bp") + offsetStr2 + "]");
+                storeHigh.operands.push_back("[" + std::string("ss:bp") + offsetStr2 + "]");
             } else if (ptrReg.find("bp") != std::string::npos) {
-                // Non-alloca: use bx+2
-                storeHigh.operands.push_back("[" + std::string("bx+2") + "]");
+                // Non-alloca: use bx+2 with segment override
+                storeHigh.operands.push_back("[" + segPrefix + std::string("bx+2") + "]");
             } else {
                 storeHigh.operands.push_back("[" + ptrReg + "+2]");
             }
@@ -287,13 +290,12 @@ std::vector<LoweredInstruction> lowerStore(SelectorState& state,
             }
 
          // For non-alloca pointers, load the address to BX for dereferencing
-            // In OS/2 1.x segmented memory model, far pointers have (selector:offset)
-            // If selector is 0, use [bx] with DS (assumes DS=DGROUP)
-            // If selector is non-zero, load ES with selector and use es:[bx]
+            // Determine segment override based on SS-derived status
+            std::string segPrefix = ptrIsSS ? "ss:" : "";
             std::string dest;
             if (ptrReg.find("bp") != std::string::npos && ptrIsAlloca) {
-                // Alloca result: stack location IS the address
-                dest = "[" + ptrReg + "]";
+                // Alloca result: stack location IS the address (SS-derived)
+                dest = "[ss:" + ptrReg + "]";
             } else if (ptrReg.find("bp") != std::string::npos) {
                 // Non-alloca: load the pointer offset (low word) to BX
                 Instruction286 loadAddr;
@@ -316,9 +318,8 @@ std::vector<LoweredInstruction> lowerStore(SelectorState& state,
                     selectorAddr = ptrReg + "+2";
                 }
 
-                // For now, assume DS=DGROUP and just use [bx]
-                // (This works for most cases where the selector is 0 or DGROUP)
-                dest = "[" + std::string("bx") + "]";
+                // Use [ss:bx] for SS-derived, [bx] for DS-derived
+                dest = "[" + segPrefix + "bx]";
             } else {
                 dest = ptrReg;
             }
@@ -484,12 +485,26 @@ std::vector<LoweredInstruction> lowerLoad(SelectorState& state,
                     // NOTE: No sub sp emitted - temp space is pre-allocated
                 }
 
+                // Determine if pointer is SS-derived for segment override
+                // Note: allocas are SS-derived for STORE but NOT for LOAD of pointer values
+                // We only track SS-derived status for POINTER VALUES, not for slots
+                bool ptrIsSS = state.ssDerivedPtrVregs.count(irInst.operands[0].name) > 0;
+                std::string segPrefix = ptrIsSS ? "ss:" : "";
+
                 // Load low word from [actualAddr] into AX
                 Instruction286 loadLow;
                 loadLow.mnemonic = "mov";
                 loadLow.operands.push_back("ax");
                 if (actualAddr == "bx") {
-                    loadLow.operands.push_back("[" + std::string("bx") + "]");
+                    loadLow.operands.push_back("[" + segPrefix + std::string("bx") + "]");
+                } else if (actualAddr.find("bp") != std::string::npos) {
+                    // Alloca load: use SS prefix if alloca is SS-derived or segPrefix is set
+                    std::string addrPrefix = segPrefix;
+                    if (addrPrefix.empty()) {
+                        bool allocaIsSS = state.frame.isSSDerived(irInst.operands[0].name);
+                        addrPrefix = allocaIsSS ? "ss:" : "";
+                    }
+                    loadLow.operands.push_back("[" + addrPrefix + actualAddr + "]");
                 } else {
                     loadLow.operands.push_back("[" + actualAddr + "]");
                 }
@@ -507,7 +522,7 @@ std::vector<LoweredInstruction> lowerLoad(SelectorState& state,
                 loadHigh.mnemonic = "mov";
                 loadHigh.operands.push_back("dx");
                 if (actualAddr == "bx") {
-                    loadHigh.operands.push_back("[" + std::string("bx+2") + "]");
+                    loadHigh.operands.push_back("[" + segPrefix + std::string("bx+2") + "]");
                 } else if (actualAddr.find("bp") != std::string::npos) {
                     int offset = 0;
                     std::string offsetStr = actualAddr.substr(2);
@@ -516,7 +531,13 @@ std::vector<LoweredInstruction> lowerLoad(SelectorState& state,
                     }
                     int newOffset = offset + 2;
                     std::string offsetStr2 = (newOffset >= 0) ? ("+" + std::to_string(newOffset)) : std::to_string(newOffset);
-                    loadHigh.operands.push_back("[" + std::string("bp") + offsetStr2 + "]");
+                    // Use SS prefix for alloca loads
+                    std::string addrPrefix = segPrefix;
+                    if (addrPrefix.empty()) {
+                        bool allocaIsSS = state.frame.isSSDerived(irInst.operands[0].name);
+                        addrPrefix = allocaIsSS ? "ss:" : "";
+                    }
+                    loadHigh.operands.push_back("[" + addrPrefix + std::string("bp") + offsetStr2 + "]");
                 } else {
                     loadHigh.operands.push_back("[" + actualAddr + "+2]");
                 }
@@ -552,41 +573,48 @@ std::vector<LoweredInstruction> lowerLoad(SelectorState& state,
                     destReg = state.frame.getPhysReg(irInst.resultName);
                 }
 
-            // For non-alloca pointers, load the address to BX for dereferencing
-                // In OS/2 1.x segmented memory model, far pointers have (selector:offset)
-                // If selector is 0, use [bx] with DS (assumes DS=DGROUP)
-                // If selector is non-zero, load ES with selector and use es:[bx]
-                if (!ptrIsAlloca) {
-                    Instruction286 loadAddr;
-                    loadAddr.mnemonic = "mov";
-                    loadAddr.operands.push_back("bx");
-                    // In 16-bit mode, only bx/si/di/bp can be base registers.
-                    // If ptrReg is ax/cx/dx, move it to bx first instead of trying to dereference it.
-                    if (ptrReg == "ax" || ptrReg == "cx" || ptrReg == "dx") {
-                        loadAddr.operands.push_back(ptrReg);
-                    } else {
-                        loadAddr.operands.push_back("[" + ptrReg + "]");
-                    }
-                    lowered.instructions.push_back(loadAddr);
+           // For non-alloca pointers, load the address to BX for dereferencing
+       // Determine if pointer is SS-derived (pointers through SS-derived pointers)
+        // SS-derived pointers need [ss:bx], DS-derived pointers need [bx]
+        // Note: allocas are SS-derived for both STORE and LOAD (they are stack locations)
+        // Note: params are NOT SS-derived because the pointer VALUE could point to DS or SS
+        // We only track SS-derived status for POINTER VALUES, not for slots
+        bool ptrIsSS = state.ssDerivedPtrVregs.count(ptrName) > 0;
+        // Alloca pointers are SS-derived because they point to stack locations
+        if (ptrIsAlloca) {
+            ptrIsSS = state.frame.isSSDerived(ptrName);
+        }
+        if (!ptrIsAlloca) {
+                Instruction286 loadAddr;
+                loadAddr.mnemonic = "mov";
+                loadAddr.operands.push_back("bx");
+                // In 16-bit mode, only bx/si/di/bp can be base registers.
+                // If ptrReg is ax/cx/dx, move it to bx first instead of trying to dereference it.
+                if (ptrReg == "ax" || ptrReg == "cx" || ptrReg == "dx") {
+                    loadAddr.operands.push_back(ptrReg);
+                } else {
+                    loadAddr.operands.push_back("[" + ptrReg + "]");
+                }
+                lowered.instructions.push_back(loadAddr);
 
-                    // For now, assume DS=DGROUP and just use [bx]
-                    // (This works for most cases where the selector is 0 or DGROUP)
+                // Load from [ss:bx] for SS-derived pointers, [bx] for DS-derived
+                std::string derefBase = ptrIsSS ? "[ss:bx]" : "[bx]";
 
-                    // Load from [bx] into destReg (or AX then store to stack for 8-bit)
-                    if (is8) {
-                        // 8-bit load: load into AL, then zero-extend to AX
-                        Instruction286 loadInst;
-                        loadInst.mnemonic = "mov";
-                        loadInst.operands.push_back("al");
-                        loadInst.operands.push_back("byte [bx]");
-                        lowered.instructions.push_back(loadInst);
+                // Load from [bx] into destReg (or AX then store to stack for 8-bit)
+                if (is8) {
+                    // 8-bit load: load into AL, then zero-extend to AX
+                    Instruction286 loadInst;
+                    loadInst.mnemonic = "mov";
+                    loadInst.operands.push_back("al");
+                    loadInst.operands.push_back("byte " + derefBase);
+                    lowered.instructions.push_back(loadInst);
 
-                        // Zero-extend: set AH to 0
-                        Instruction286 zeroExt;
-                        zeroExt.mnemonic = "mov";
-                        zeroExt.operands.push_back("ah");
-                        zeroExt.operands.push_back("0");
-                        lowered.instructions.push_back(zeroExt);
+                    // Zero-extend: set AH to 0
+                    Instruction286 zeroExt;
+                    zeroExt.mnemonic = "mov";
+                    zeroExt.operands.push_back("ah");
+                    zeroExt.operands.push_back("0");
+                    lowered.instructions.push_back(zeroExt);
 
                         // Store AX to stack location for the result vreg
                         std::string resultStack = state.frame.getPhysReg(irInst.resultName);
@@ -605,18 +633,18 @@ std::vector<LoweredInstruction> lowerLoad(SelectorState& state,
 
                         // Update vreg mapping to point to stack
                         
-                    } else {
+                       } else {
                         // 16-bit load
                         Instruction286 loadInst;
                         loadInst.mnemonic = "mov";
                         loadInst.operands.push_back(destReg);
-                        loadInst.operands.push_back("[" + std::string("bx") + "]");
+                        std::string derefBase16 = ptrIsSS ? "[ss:bx]" : "[bx]";
+                        loadInst.operands.push_back(derefBase16);
                         lowered.instructions.push_back(loadInst);
                     }
                 } else {
-                    // Load from [bp-N] into destReg (alloca result, address is the stack location)
-                    // But first check if ptrReg is actually a valid memory address (bp-relative)
-                    // If it's a register like ax/cx/dx, we need to move it to bx first
+                    // Alloca result: address is SS-derived (stack location)
+                    // SS-derived pointers need [ss:bx], [ss:bp+offset]
                     std::string actualLoadAddr = ptrReg;
                     if (ptrReg.find("bp") == std::string::npos &&
                         ptrReg != "bx" && ptrReg != "si" && ptrReg != "di") {
@@ -635,9 +663,9 @@ std::vector<LoweredInstruction> lowerLoad(SelectorState& state,
                         loadInst.mnemonic = "mov";
                         loadInst.operands.push_back("al");
                         if (actualLoadAddr.find("bp") != std::string::npos) {
-                            loadInst.operands.push_back("byte [" + actualLoadAddr + "]");
+                            loadInst.operands.push_back("byte [ss:" + actualLoadAddr + "]");
                         } else {
-                            loadInst.operands.push_back("byte [" + actualLoadAddr + "]");
+                            loadInst.operands.push_back("byte [ss:" + actualLoadAddr + "]");
                         }
                         lowered.instructions.push_back(loadInst);
 
@@ -671,9 +699,9 @@ std::vector<LoweredInstruction> lowerLoad(SelectorState& state,
                         loadInst.mnemonic = "mov";
                         loadInst.operands.push_back(destReg);
                         if (actualLoadAddr.find("bp") != std::string::npos) {
-                            loadInst.operands.push_back("[" + actualLoadAddr + "]");
+                            loadInst.operands.push_back("[ss:" + actualLoadAddr + "]");
                         } else {
-                            loadInst.operands.push_back("[" + actualLoadAddr + "]");
+                            loadInst.operands.push_back("[ss:" + actualLoadAddr + "]");
                         }
                         lowered.instructions.push_back(loadInst);
                     }
@@ -682,6 +710,11 @@ std::vector<LoweredInstruction> lowerLoad(SelectorState& state,
         } else {
             // Pointer is in a register (not bp-relative)
             // Need to dereference it by moving to bx first
+            // Determine if pointer is SS-derived
+            // Note: allocas are SS-derived for STORE but NOT for LOAD of pointer values
+            // We only track SS-derived status for POINTER VALUES, not for slots
+            bool ptrIsSS = state.ssDerivedPtrVregs.count(irInst.operands[0].name) > 0;
+            std::string segPrefix = ptrIsSS ? "ss:" : "";
             if (is32) {
                 // Move pointer to bx
                 Instruction286 movPtr;
@@ -690,18 +723,18 @@ std::vector<LoweredInstruction> lowerLoad(SelectorState& state,
                 movPtr.operands.push_back(ptrReg);
                 lowered.instructions.push_back(movPtr);
                 
-                // Load low word from [bx]
+                // Load low word from [ss:bx] or [bx] depending on SS-derived status
                 Instruction286 loadLow;
                 loadLow.mnemonic = "mov";
                 loadLow.operands.push_back("ax");
-                loadLow.operands.push_back("[bx]");
+                loadLow.operands.push_back("[" + segPrefix + "bx]");
                 lowered.instructions.push_back(loadLow);
                 
-                // Load high word from [bx+2]
+                // Load high word from [ss:bx+2] or [bx+2]
                 Instruction286 loadHigh;
                 loadHigh.mnemonic = "mov";
                 loadHigh.operands.push_back("dx");
-                loadHigh.operands.push_back("[bx+2]");
+                loadHigh.operands.push_back("[" + segPrefix + "bx+2]");
                 lowered.instructions.push_back(loadHigh);
                 
                 // Store to result stack location
@@ -747,12 +780,23 @@ std::vector<LoweredInstruction> lowerLoad(SelectorState& state,
                 loadInst.mnemonic = "mov";
                 loadInst.operands.push_back(destReg);
                 if (is8) {
-                    loadInst.operands.push_back("byte [bx]");
+                    loadInst.operands.push_back("byte [" + segPrefix + "bx]");
                 } else {
-                    loadInst.operands.push_back("[bx]");
+                    loadInst.operands.push_back("[" + segPrefix + "bx]");
                 }
                 lowered.instructions.push_back(loadInst);
             }
+        }
+    }
+
+    // Propagate SS-derived status to pointer results
+    // If we loaded a pointer value through an SS-derived pointer, the result is SS-derived
+    // Note: loading from an alloca does NOT make the loaded pointer SS-derived
+    // (the alloca stores a POINTER VALUE, which could point to DS or SS)
+    // We only track SS-derived status for POINTER VALUES, not for slots
+    if (irInst.resultType && irInst.resultType->isPointer()) {
+        if (state.ssDerivedPtrVregs.count(irInst.operands[0].name) > 0) {
+            state.ssDerivedPtrVregs.insert(irInst.resultName);
         }
     }
 
@@ -953,6 +997,14 @@ std::vector<LoweredInstruction> lowerGetElementPtr(SelectorState& state,
 
                 // Mark result as 32-bit and update phys reg tracking
                 state.frame.setPhysReg(irInst.resultName, resultStack);
+
+                // Propagate SS-derived status: GEP result inherits base pointer's SS-derived status
+                // Allocas are SS-derived (they're on the current stack frame)
+                // So GEP on an alloca produces an SS-derived pointer
+                bool baseIsAlloca = state.frame.isAlloca(irInst.operands[0].name);
+                if (state.ssDerivedPtrVregs.count(irInst.operands[0].name) > 0 || baseIsAlloca) {
+                    state.ssDerivedPtrVregs.insert(irInst.resultName);
+                }
             }
         } else {
             // 16-bit GEP

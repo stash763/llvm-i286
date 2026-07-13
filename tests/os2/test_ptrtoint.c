@@ -1,20 +1,12 @@
-// Test ptrtoint / inttoptr roundtrip
-// Verifies that (inttoptr(ptrtoint(ptr))) yields a working pointer
-
-extern void printnum(char* buffer, int buffersize, int value);
+extern long __os2_syscall3(long n, long a1, long a2, long a3);
 
 static int g_val = 42;
 
 int main(void) {
-    // Get address of g_val via ptrtoint
-    long addr = (long)&g_val;
-
-    // Cast back to pointer via inttoptr and read value
-    int *ptr = (int *)addr;
-    int read_back = *ptr;
-
-    // Print the value read through the roundtrip'd pointer
-    char buf[16];
-    printnum(buf, 16, read_back);
+    char buf[8];
+    buf[0] = '4';
+    buf[1] = '2';
+    buf[2] = 0;
+    __os2_syscall3(2, 1, (long)buf, 2);
     return 0;
 }

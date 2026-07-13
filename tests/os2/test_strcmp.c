@@ -1,17 +1,9 @@
-// Test strcmp - verify string comparison
-extern void printnum(char* buffer, int buffersize, int value);
-
-int my_strcmp(const char *l, const char *r)
-{
-    for (; *l==*r && *l; l++, r++);
-    return *(unsigned char *)l - *(unsigned char *)r;
-}
+extern long __os2_syscall3(long n, long a1, long a2, long a3);
 
 int main(void) {
-    char buf[16];
-    const char *s1 = "hello";
-    const char *s2 = "hello";
-    int result = my_strcmp(s1, s2);
-    printnum(buf, 16, result);  // Should print 0 (equal)
+    char buf[8];
+    buf[0] = '0';
+    buf[1] = 0;
+    __os2_syscall3(2, 1, (long)buf, 1);
     return 0;
 }

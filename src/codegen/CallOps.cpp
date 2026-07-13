@@ -19,6 +19,8 @@ std::vector<LoweredInstruction> lowerCall(SelectorState& state,
     std::vector<LoweredInstruction> loweredVec;
     LoweredInstruction lowered;
 
+    bool skipCallAndCleanup = false;
+    
     std::string callee;
     if (!irInst.calleeName.empty()) {
         callee = irInst.calleeName;
@@ -32,13 +34,10 @@ std::vector<LoweredInstruction> lowerCall(SelectorState& state,
         callee = "memcpy";
     }
     
-    // Lower llvm.va_start to llvm_va_start
+    // Detect llvm.va_start for inline generation
     bool isLLVAVaStart = (callee == "llvm.va_start");
-    if (isLLVAVaStart) {
-        callee = "llvm_va_start";
-    }
     
-    // Lower llvm.va_end to llvm_va_end
+    // Lower llvm.va_end to llvm_va_end (no-op, but keep for now)
     bool isLLVAVaEnd = (callee == "llvm.va_end");
     if (isLLVAVaEnd) {
         callee = "llvm_va_end";
@@ -78,6 +77,19 @@ std::vector<LoweredInstruction> lowerCall(SelectorState& state,
         // We need a local copy of callArgKinds to modify (since irInst is const)
         // The synthetic arg is a far pointer (32-bit)
         // We'll handle this in the stack cleanup by checking for synthetic args
+        
+        // Mark the va_list alloca as SS-derived for pointer loads
+        // After va_start, the va_list contains SS-derived pointers to varargs
+        if (!args.empty()) {
+            std::string apArg = args[0]; // First arg is the ap alloca
+            // The ap alloca's contents are SS-derived pointers
+            state.ssDerivedPtrVregs.insert(apArg);
+        }
+    }
+    
+    // llvm.va_end is a no-op - clear args to skip call and cleanup
+    if (isLLVAVaEnd) {
+        args.clear();
     }
 
     // Push arguments right-to-left
@@ -101,6 +113,9 @@ std::vector<LoweredInstruction> lowerCall(SelectorState& state,
         // Handle synthetic bp+4 sentinel for llvm_va_start
         if (argName == "bp_plus_4_sentinel") {
             // Push the far pointer address of the last named parameter (bp+4)
+            // For near calls: bp+2 = return IP, bp+4 = first parameter offset
+            // For far calls: bp+2 = return IP, bp+4 = return CS, bp+6 = first param offset
+            // Our calls are near (within segment), so first param is at bp+4.
             // High word = SS (segment selector for stack), low word = offset
             Instruction286 leaArg;
             leaArg.mnemonic = "lea";
@@ -249,12 +264,18 @@ std::vector<LoweredInstruction> lowerCall(SelectorState& state,
                 // Get the physical register for the pointer value
                 std::string argReg = state.frame.getPhysReg(vregLookupName);
                 
+                // Determine if this pointer is SS-derived
+                // Note: params are NOT SS-derived because the pointer VALUE could point to DS or SS
+                bool argIsSS = state.frame.isAlloca(vregLookupName) ||
+                               state.ssDerivedPtrVregs.count(vregLookupName) > 0;
+                std::string selector = argIsSS ? "ss" : "0";
+                
                 if (argReg.find("bp") != std::string::npos) {
                     // Check if this is an alloca: the stack offset IS the pointer value
                     bool argIsAlloca = state.frame.isAlloca(vregLookupName);
                     if (argIsAlloca) {
                         // Alloca result: the stack offset IS the pointer value
-                        // Push SS (segment) and bp+offset (offset)
+                        // Push selector (SS for SS-derived, 0 for DS-derived) and bp+offset (offset)
                         int offset = 0;
                         std::string offsetStr = argReg.substr(2); // Remove "bp"
                         if (!offsetStr.empty()) {
@@ -274,7 +295,7 @@ std::vector<LoweredInstruction> lowerCall(SelectorState& state,
 
                         Instruction286 pushHigh;
                         pushHigh.mnemonic = "push";
-                        pushHigh.operands.push_back("ss");
+                        pushHigh.operands.push_back(selector);
                         lowered.instructions.push_back(pushHigh);
 
                         Instruction286 pushLow;
@@ -295,10 +316,10 @@ std::vector<LoweredInstruction> lowerCall(SelectorState& state,
                         lowered.instructions.push_back(pushLow);
                     }
                 } else {
-                    // Pointer value in a register - push DX (high), then register (low)
+                    // Pointer value in a register - push selector (high), then register (low)
                     Instruction286 pushHigh;
                     pushHigh.mnemonic = "push";
-                    pushHigh.operands.push_back("dx");
+                    pushHigh.operands.push_back(selector);
                     lowered.instructions.push_back(pushHigh);
                     
                     Instruction286 pushLow;
@@ -340,11 +361,16 @@ std::vector<LoweredInstruction> lowerCall(SelectorState& state,
                 // Check if this argument is an alloca result (stack offset IS the address)
                 // Use argName (with % prefix) for consistent lookup with other codegen
                 bool argIsAlloca = state.frame.isAlloca(argName);
+                // Determine if this pointer is SS-derived
+                // Note: params are NOT SS-derived because the pointer VALUE could point to DS or SS
+                bool argIsSS = state.frame.isAlloca(argName) ||
+                               state.ssDerivedPtrVregs.count(argName) > 0;
+                std::string selector = argIsSS ? "ss" : "0";
                   if (argIsAlloca) {
                     // Alloca result: the stack offset IS the pointer value
                     // We need to compute bp + offset at runtime and push that as the address
                     // Push low word = bp + offset (computed at runtime via lea)
-                    // Push high word = SS selector (for far pointer in OS/2 1.x segmented model)
+                    // Push high word = selector (SS for SS-derived, 0 for DS-derived)
                     std::string argReg = state.frame.getPhysReg(argName);
                     int offset = 0;
                     if (argReg.find("bp") != std::string::npos) {
@@ -368,7 +394,7 @@ std::vector<LoweredInstruction> lowerCall(SelectorState& state,
 
                     Instruction286 pushHigh;
                     pushHigh.mnemonic = "push";
-                    pushHigh.operands.push_back("ss");
+                    pushHigh.operands.push_back(selector);
                     lowered.instructions.push_back(pushHigh);
 
                     Instruction286 pushLow;
@@ -512,40 +538,111 @@ std::vector<LoweredInstruction> lowerCall(SelectorState& state,
         }
     }
 
-    // Call the function
-    // Check if callee is an indirect call through a vreg (function pointer)
-    if (!callee.empty() && callee[0] == '%') {
-        // Indirect call: load function pointer and call through register
-        // The callee vreg should map to a stack slot or register
-        std::string calleeReg = state.frame.getPhysReg(callee);
-        if (calleeReg.find("bp") != std::string::npos) {
-            // Value is at a stack location - load into BX and call
-            Instruction286 loadPtr;
-            loadPtr.mnemonic = "lea";
-            loadPtr.operands.push_back("bx");
-            loadPtr.operands.push_back("[" + calleeReg + "]");
-            lowered.instructions.push_back(loadPtr);
-            
-            Instruction286 callIndirect;
-            callIndirect.mnemonic = "call";
-            callIndirect.operands.push_back("bx");
-            lowered.instructions.push_back(callIndirect);
+    // For llvm.va_start: generate inline code instead of calling external function
+    if (isLLVAVaStart) {
+        // We pushed 2 args (ap and last_arg), each 32-bit (4 bytes each = 8 bytes total)
+        // Stack layout after pushes: [ap_offset][ap_selector][last_arg_offset][last_arg_selector]
+        // After call near pushes return IP: [return_IP][ap_offset][ap_selector][last_arg_offset][last_arg_selector]
+        // We can access these from [bp+2], [bp+4], [bp+6], [bp+8] respectively
+        // Actually, since we haven't called anything, we can pop them directly
+        
+        // Pop last_arg (the arg we just pushed last, so it's on top of stack)
+        // last_arg was pushed as: push SS (selector), push ax (offset where ax=bp+4)
+        // So stack top is: [last_arg_offset][last_arg_selector=SS]
+        
+        // Pop last_arg_selector into DX
+        Instruction286 popLastArgSel;
+        popLastArgSel.mnemonic = "pop";
+        popLastArgSel.operands.push_back("dx");
+        lowered.instructions.push_back(popLastArgSel);
+        
+        // Pop last_arg_offset into AX
+        Instruction286 popLastArgOff;
+        popLastArgOff.mnemonic = "pop";
+        popLastArgOff.operands.push_back("ax");
+        lowered.instructions.push_back(popLastArgOff);
+        
+        // Pop ap_selector into CX (we'll use this for storing to *ap)
+        Instruction286 popApSel;
+        popApSel.mnemonic = "pop";
+        popApSel.operands.push_back("cx");
+        lowered.instructions.push_back(popApSel);
+        
+        // Pop ap_offset into BX
+        Instruction286 popApOff;
+        popApOff.mnemonic = "pop";
+        popApOff.operands.push_back("bx");
+        lowered.instructions.push_back(popApOff);
+        
+        // Compute first_arg = last_arg + 4
+        Instruction286 addFirstArg;
+        addFirstArg.mnemonic = "add";
+        addFirstArg.operands.push_back("ax");
+        addFirstArg.operands.push_back("4");
+        lowered.instructions.push_back(addFirstArg);
+        // Note: carry flag is set if overflow, but we ignore it for now
+        // In practice, last_arg is a stack offset, so adding 4 won't overflow
+        
+        // Store first_arg to *ap
+        // *ap = first_arg offset (low word)
+        Instruction286 storeApLow;
+        storeApLow.mnemonic = "mov";
+        storeApLow.operands.push_back("[ss:bx]");
+        storeApLow.operands.push_back("ax");
+        lowered.instructions.push_back(storeApLow);
+        
+        // *(ap+2) = SS (selector for stack)
+        Instruction286 storeApHigh;
+        storeApHigh.mnemonic = "mov";
+        storeApHigh.operands.push_back("[ss:bx+2]");
+        storeApHigh.operands.push_back("ss");
+        lowered.instructions.push_back(storeApHigh);
+        
+        // Set flag to skip the normal call and stack cleanup (we already popped the args)
+        skipCallAndCleanup = true;
+    }
+    
+    // llvm.va_end is a no-op - skip entirely
+    if (isLLVAVaEnd) {
+        skipCallAndCleanup = true;
+    }
+    
+    // Call the function (skip for inline intrinsics like llvm.va.start)
+    if (!skipCallAndCleanup) {
+        // Check if callee is an indirect call through a vreg (function pointer)
+        if (!callee.empty() && callee[0] == '%') {
+            // Indirect call: load function pointer and call through register
+            // The callee vreg should map to a stack slot or register
+            std::string calleeReg = state.frame.getPhysReg(callee);
+            if (calleeReg.find("bp") != std::string::npos) {
+                // Value is at a stack location - load into BX and call
+                Instruction286 loadPtr;
+                loadPtr.mnemonic = "lea";
+                loadPtr.operands.push_back("bx");
+                loadPtr.operands.push_back("[" + calleeReg + "]");
+                lowered.instructions.push_back(loadPtr);
+                
+                Instruction286 callIndirect;
+                callIndirect.mnemonic = "call";
+                callIndirect.operands.push_back("bx");
+                lowered.instructions.push_back(callIndirect);
+            } else {
+                // Value is in a register - call through that register
+                Instruction286 callIndirect;
+                callIndirect.mnemonic = "call";
+                callIndirect.operands.push_back(calleeReg);
+                lowered.instructions.push_back(callIndirect);
+            }
         } else {
-            // Value is in a register - call through that register
-            Instruction286 callIndirect;
-            callIndirect.mnemonic = "call";
-            callIndirect.operands.push_back(calleeReg);
-            lowered.instructions.push_back(callIndirect);
+            Instruction286 callInst;
+            callInst.mnemonic = "call";
+            callInst.operands.push_back(callee);
+            lowered.instructions.push_back(callInst);
         }
-    } else {
-        Instruction286 callInst;
-        callInst.mnemonic = "call";
-        callInst.operands.push_back(callee);
-        lowered.instructions.push_back(callInst);
     }
 
     // Clean up stack (caller pays)
-    if (!args.empty()) {
+    if (!skipCallAndCleanup && !args.empty()) {
         // Calculate stack bytes - need to account for 32-bit args
         int stackBytes = 0;
         for (size_t argIdx = 0; argIdx < args.size(); argIdx++) {

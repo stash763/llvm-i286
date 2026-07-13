@@ -40,8 +40,12 @@ std::vector<LoweredInstruction> lowerAdd(SelectorState& state,
             // Mark result as 32-bit
             // 32-bit tracking now in StackFrame
 
-            // For 32-bit operations, always use stack locations
-            std::string op1Stack = state.frame.getPhysReg(op1Name);
+           // Check if op1 is a constant
+            bool op1IsConst = state.frame.classifyOperand(op1Name) == StackFrame::OperandKind::Constant;
+            std::string op1Stack;
+            if (!op1IsConst) {
+                op1Stack = state.frame.getPhysReg(op1Name);
+            }
 
             // Check if op2 is a vreg (exists in state maps)
             bool op2IsVreg = state.frame.hasSlot(op2Name) ||
@@ -55,34 +59,46 @@ std::vector<LoweredInstruction> lowerAdd(SelectorState& state,
             }
 
             // Load op1 low word to AX, high word to BX
-            std::string op1Addr = safeMemAddr(op1Stack, lowered.instructions);
-            
             Instruction286 loadLow;
             loadLow.mnemonic = "mov";
-            loadLow.operands.push_back("ax");
-            loadLow.operands.push_back("[" + op1Addr + "]");
+            if (op1IsConst) {
+                int64_t constVal = std::stoll(op1Name);
+                loadLow.operands.push_back("ax");
+                loadLow.operands.push_back(std::to_string(constVal & 0xFFFF));
+            } else {
+                std::string op1Addr = safeMemAddr(op1Stack, lowered.instructions);
+                loadLow.operands.push_back("ax");
+                loadLow.operands.push_back("[" + op1Addr + "]");
+            }
             lowered.instructions.push_back(loadLow);
 
             Instruction286 loadHigh;
             loadHigh.mnemonic = "mov";
             loadHigh.operands.push_back("bx");
-            if (op1Addr.find("bp") != std::string::npos) {
-                int offset = 0;
-                std::string offsetStr = op1Addr.substr(2);
-                if (!offsetStr.empty()) {
-                    try { offset = std::stoi(offsetStr); } catch (...) {}
-                }
-                int newOffset = offset + 2;
-                std::string offsetStr2 = (newOffset >= 0) ? ("+" + std::to_string(newOffset)) : std::to_string(newOffset);
-                loadHigh.operands.push_back("[" + std::string("bp") + offsetStr2 + "]");
+            if (op1IsConst) {
+                int64_t constVal = std::stoll(op1Name);
+                int16_t highWord = (constVal >> 16) & 0xFFFF;
+                loadHigh.operands.push_back(std::to_string(highWord));
             } else {
-                loadHigh.operands.push_back("[" + op1Addr + "+2]");
+                std::string op1Addr = safeMemAddr(op1Stack, lowered.instructions);
+                if (op1Addr.find("bp") != std::string::npos) {
+                    int offset = 0;
+                    std::string offsetStr = op1Addr.substr(2);
+                    if (!offsetStr.empty()) {
+                        try { offset = std::stoi(offsetStr); } catch (...) {}
+                    }
+                    int newOffset = offset + 2;
+                    std::string offsetStr2 = (newOffset >= 0) ? ("+" + std::to_string(newOffset)) : std::to_string(newOffset);
+                    loadHigh.operands.push_back("[" + std::string("bp") + offsetStr2 + "]");
+                } else {
+                    loadHigh.operands.push_back("[" + op1Addr + "+2]");
+                }
             }
             lowered.instructions.push_back(loadHigh);
 
             // Load op2 low word to CX, high word to DX
             std::string op2Addr = safeMemAddr(op2Stack, lowered.instructions);
-
+            
             Instruction286 loadOp2Low;
             loadOp2Low.mnemonic = "mov";
             if (op2IsConst) {
@@ -94,7 +110,7 @@ std::vector<LoweredInstruction> lowerAdd(SelectorState& state,
                 loadOp2Low.operands.push_back("[" + op2Addr + "]");
             }
             lowered.instructions.push_back(loadOp2Low);
-
+            
             Instruction286 loadOp2High;
             loadOp2High.mnemonic = "mov";
             if (op2IsConst) {
@@ -673,39 +689,60 @@ std::vector<LoweredInstruction> lowerDivRem(SelectorState& state,
             lowered.instructions.push_back(movDivHigh);
 
             // Load divisor low word to CX, high word to DX
-            std::string divisorReg = state.frame.getPhysReg(divisorName);
-            if (divisorReg.find("bp") != std::string::npos) {
+            // Check if divisor is a constant
+            bool divisorIsConst = false;
+            int64_t divisorConstVal = 0;
+            try { divisorConstVal = std::stoll(divisorName); divisorIsConst = true; } catch (...) {}
+
+            if (divisorIsConst) {
+                // Load constant divisor to CX:DX
                 Instruction286 loadDivisorLow;
                 loadDivisorLow.mnemonic = "mov";
                 loadDivisorLow.operands.push_back("cx");
-                loadDivisorLow.operands.push_back("[" + divisorReg + "]");
+                loadDivisorLow.operands.push_back(std::to_string(divisorConstVal & 0xFFFF));
                 lowered.instructions.push_back(loadDivisorLow);
 
                 Instruction286 loadDivisorHigh;
                 loadDivisorHigh.mnemonic = "mov";
-                int offset = 0;
-                std::string offsetStr = divisorReg.substr(divisorReg.find("bp") + 2);
-                if (!offsetStr.empty()) {
-                    try { offset = std::stoi(offsetStr); } catch (...) {}
-                }
-                int newOffset = offset + 2;
-                std::string offsetStr2 = (newOffset >= 0) ? ("+" + std::to_string(newOffset)) : std::to_string(newOffset);
-                loadDivisorHigh.operands.push_back("[" + std::string("bp") + offsetStr2 + "]");
+                int16_t highWord = (divisorConstVal >> 16) & 0xFFFF;
                 loadDivisorHigh.operands.push_back("dx");
+                loadDivisorHigh.operands.push_back(std::to_string(highWord));
                 lowered.instructions.push_back(loadDivisorHigh);
-            } else if (divisorReg != "cx") {
-                Instruction286 movDivisorLow;
-                movDivisorLow.mnemonic = "mov";
-                movDivisorLow.operands.push_back("cx");
-                movDivisorLow.operands.push_back(divisorReg);
-                lowered.instructions.push_back(movDivisorLow);
+            } else {
+                std::string divisorReg = state.frame.getPhysReg(divisorName);
+                if (divisorReg.find("bp") != std::string::npos) {
+                    Instruction286 loadDivisorLow;
+                    loadDivisorLow.mnemonic = "mov";
+                    loadDivisorLow.operands.push_back("cx");
+                    loadDivisorLow.operands.push_back("[" + divisorReg + "]");
+                    lowered.instructions.push_back(loadDivisorLow);
 
-                // Load high word
-                Instruction286 movDivisorHigh;
-                movDivisorHigh.mnemonic = "mov";
-                movDivisorHigh.operands.push_back("dx");
-                movDivisorHigh.operands.push_back("[" + divisorReg + "+2]");
-                lowered.instructions.push_back(movDivisorHigh);
+                    Instruction286 loadDivisorHigh;
+                    loadDivisorHigh.mnemonic = "mov";
+                    int offset = 0;
+                    std::string offsetStr = divisorReg.substr(divisorReg.find("bp") + 2);
+                    if (!offsetStr.empty()) {
+                        try { offset = std::stoi(offsetStr); } catch (...) {}
+                    }
+                    int newOffset = offset + 2;
+                    std::string offsetStr2 = (newOffset >= 0) ? ("+" + std::to_string(newOffset)) : std::to_string(newOffset);
+                    loadDivisorHigh.operands.push_back("[" + std::string("bp") + offsetStr2 + "]");
+                    loadDivisorHigh.operands.push_back("dx");
+                    lowered.instructions.push_back(loadDivisorHigh);
+                } else if (divisorReg != "cx") {
+                    Instruction286 movDivisorLow;
+                    movDivisorLow.mnemonic = "mov";
+                    movDivisorLow.operands.push_back("cx");
+                    movDivisorLow.operands.push_back(divisorReg);
+                    lowered.instructions.push_back(movDivisorLow);
+
+                    // Load high word
+                    Instruction286 movDivisorHigh;
+                    movDivisorHigh.mnemonic = "mov";
+                    movDivisorHigh.operands.push_back("dx");
+                    movDivisorHigh.operands.push_back("[" + divisorReg + "+2]");
+                    lowered.instructions.push_back(movDivisorHigh);
+                }
             }
 
             // Call division routine (far call, tested runtime)
@@ -755,7 +792,8 @@ std::vector<LoweredInstruction> lowerDivRem(SelectorState& state,
                     lowered.instructions.push_back(storeResultHigh);
                 }
 
-                
+                // Update vreg mapping to point to the stack slot
+                state.frame.setPhysReg(irInst.resultName, resultStack);
             }
         } else {
             // 16-bit division

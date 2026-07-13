@@ -97,6 +97,10 @@ shift_num2:	sar	dx,1			; num2 >>= 1
 
                 jmp	div_loop
 
+               ; Save remainder in cx:dx before neg_check modifies ax
+                mov	cx, ax		; save remainder low word
+                mov	dx, bx		; save remainder high word
+
 neg_check:      mov	ax, [ss:bp - 6]		; restore negative true/false off the stack
 		cmp	ax,0			; if (negative)
                 je 	div_done
@@ -105,4 +109,7 @@ neg_check:      mov	ax, [ss:bp - 6]		; restore negative true/false off the stack
                 neg	di
                 sbb	si,0
 div_done:
+                ; Restore remainder in ax:bx
+                mov	ax, cx
+                mov	bx, dx
                 retf
