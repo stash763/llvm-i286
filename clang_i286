@@ -20,7 +20,7 @@
 #   All other flags are passed through to clang for the C->LLVM IR step.
 #
 # Environment overrides:
-#   CLANG         Path to clang binary (default: clang)
+#   CLANG         Path to clang binary (default: clang-15)
 #   LLVM_I286     Path to llvm-i286 binary (default: ./build/llvm-i286)
 #   NASM          Path to nasm binary (default: nasm)
 #   WLINK         Path to wlink binary (default: $WATCOM/binl/wlink)

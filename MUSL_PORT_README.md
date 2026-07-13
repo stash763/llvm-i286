@@ -1,270 +1,177 @@
 # musl libc Port to llvm-i286 (OS/2 1.x)
 
-This directory contains the initial port of musl libc to the llvm-i286 code generator, targeting OS/2 1.x in 16-bit protected mode.
-
 ## Overview
 
-This port enables C programs compiled with the llvm-i286 backend to use the musl C library on OS/2 1.x systems running on 80286 processors.
+This directory contains the partial port of musl libc to the llvm-i286 code generator,
+targeting OS/2 1.x in 16-bit protected mode on Intel 80286 processors.
 
-### Key Features
+## Current Status
 
-- **32-bit data model**: int=32-bit, short=16-bit, long=32-bit, pointer=32-bit (all emulated on 16-bit 80286)
-- **Single 64K segment**: All data fits within a single 64K DGROUP segment initially
-- **C-only implementation**: No architecture-specific assembly (uses 80287 FPU instructions where needed)
-- **OS/2 API integration**: Syscalls mapped to OS/2 Dos* API calls
-- **Static linking only**: No dynamic linking support in initial port
+### Working
+
+- **Header files**: Type definitions, syscall numbers, CRT startup for i286 architecture
+  - `musl/arch/i286/bits/alltypes.h` — 32-bit data model types (int=32, long=32, ptr=32)
+  - `musl/arch/i286/syscall_arch.h` — OS/2 syscall numbers
+  - `musl/arch/i286/atomic_arch.h` — Atomic operations for i286
+  - `musl/arch/i286/crt_arch.h` — CRT startup code
+  - `musl/include/stdarg.h` — Custom `va_arg` macro (no inline asm, uses codegen SS-derived pointers)
+- **Syscall dispatch**: `__os2_syscall3` for read/write/exit syscalls
+- **printf_min**: Minimal printf with `%d`, `%s`, `%%`, and literal characters
+- **va_start inline**: Codegen generates inline `llvm.va.start` (no external runtime call)
+
+### Limitations
+
+- **No file I/O**: fopen/fread/fwrite/fclose not ported
+- **No malloc/free**: Memory allocation not supported
+- **No string functions**: strlen/strcmp/memcpy not ported (tests use inline helpers)
+- **Limited printf**: Only `%d`, `%s`, `%%` supported (no `%f`, `%x`, `%ld`, etc.)
+- **No threads**: No pthread support
+- **No locale**: No locale support
+- **No wchar**: Wide character support not implemented
 
 ## Directory Structure
 
 ```
 musl/
-├── arch/i286/              # Architecture-specific files for i286
+├── arch/i286/              # i286 architecture-specific files
 │   ├── bits/               # Header files for types, syscalls, etc.
-│   │   ├── alltypes.h.in   # Type definitions (32-bit model)
-│   │   ├── syscall.h.in    # OS/2 syscall numbers
-│   │   ├── signal.h        # Signal definitions
-│   │   ├── fcntl.h         # File control flags
-│   │   ├── float.h         # FPU constants
-│   │   ├── limits.h        # System limits
-│   │   ├── mman.h          # Memory mapping
-│   │   ├── stat.h          # File stat structure
-│   │   ├── setjmp.h        # Setjmp/longjmp
-│   │   ├── termios.h       # Terminal settings
-│   │   ├── poll.h          # Poll definitions
-│   │   ├── errno.h         # Error codes
-│   │   ├── user.h          # User structure
-│   │   └── io.h            # I/O port access
-│   ├── atomic_arch.h       # Atomic operations (C-only)
-│   ├── syscall_arch.h      # Syscall interface
-│   ├── crt_arch.h          # C runtime startup
-│   ├── pthread_arch.h      # Thread pointer (stub)
-│   ├── reloc.h             # Relocation types (stub)
-│   └── kstat.h             # Kernel stat structure
-├── src/
-│   ├── string/i286/        # String functions (C implementations)
-│   │   ├── memcpy.c
-│   │   ├── memmove.c
-│   │   └── memset.c
-│   ├── fenv/i286/          # FPU environment (80287 instructions)
-│   │   └── fenv.c
-│   ├── setjmp/i286/        # Setjmp/longjmp
-│   │   ├── setjmp.c
-│   │   └── longjmp.c
-│   ├── thread/i286/        # Thread stubs (single-threaded initially)
-│   │   ├── clone.c
-│   │   ├── tls.c
-│   │   ├── __set_thread_area.c
-│   │   ├── __unmapself.c
-│   │   └── syscall_cp.c
-│   └── signal/i286/        # Signal stubs
-│       ├── restore.c
-│       └── sigsetjmp.c
+│   │   ├── alltypes.h      # 32-bit data model type definitions
+│   │   ├── syscall.h       # OS/2 syscall numbers (via syscall_arch.h)
+│   │   ├── errno.h         # Error number definitions
+│   │   └── limits.h        # System limits
+│   ├── atomic_arch.h       # Atomic operations for i286
+│   ├── crt_arch.h          # CRT startup code
+│   ├── kstat.h             # Kernel stat structure
+│   ├── pthread_arch.h      # pthread architecture (stub)
+│   ├── reloc.h             # Relocation support
+│   └── syscall_arch.h      # Syscall interface definition
+├── include/                # Public header files (subset of musl)
+│   ├── stdarg.h            # Custom va_arg macro (codegen-friendly)
+│   └── ...                 # Other standard headers
+├── src/                    # Library source files (subset ported)
+│   └── ...                 # Minimal set for current tests
+└── port/                   # Porting infrastructure
+    └── ...                 # Build scripts, patches
+
+musl_port/                  # llvm-i286-specific porting helpers
+├── printf_min.c            # Minimal printf implementation
+└── ...                     # Other porting helpers
 ```
 
-## Building
+## Using the musl Headers
 
-### Prerequisites
-
-1. **LLVM/Clang** with i286 target support
-2. **llvm-i286** code generator (built from parent directory)
-3. **NASM** assembler
-4. **OpenWatcom** wlink linker (for OS/2 NE executables)
-
-### Quick Start
+To compile C code that uses musl headers:
 
 ```bash
-# 1. Configure musl for i286 target
-./configure_i286.sh
-
-# 2. Build musl
-./build_musl.sh
+clang-15 -S -emit-llvm -m32 \
+  -I./musl/include \
+  -I./musl/arch/i286 \
+  -ffreestanding \
+  input.c -o output.ll
 ```
 
-### Manual Build
+The `-ffreestanding` flag tells clang not to assume a hosted environment (no standard
+library assumed).
 
-```bash
-# Configure
-cd musl
-cat > config.mak << 'EOF'
-ARCH = i286
-CC = clang -target i286-unknown-os2
-CFLAGS_C99FSE = -std=c99 -ffreestanding -nostdinc
-CFLAGS_AUTO = -Os -pipe
-shared = no
-static = yes
-EOF
-
-# Build
-make CC=path/to/musl_cc.sh
-```
-
-## Build Pipeline
-
-The build process for each C source file:
-
-```
-source.c
-  → clang -target i286-unknown-os2 -S -emit-llvm
-  → source.ll (LLVM IR)
-  → llvm-i286 source.ll -o source.asm
-  → source.asm (NASM assembly)
-  → nasm -f obj -o source.o source.asm
-  → source.o (OS/2 object file)
-```
-
-### Runtime Library
-
-The runtime library (`runtime.lib`) provides tested arithmetic and I/O functions:
-
-- `_MultiplyI32` - 32-bit signed multiplication (tested)
-- `_DivideI32` - 32-bit signed division (tested)
-- `printnum` - Print 32-bit integer to stdout
-- `itoa` - Integer to ASCII conversion
-
-These are built from the `runtime/` directory and linked via `wlink`.
-
-**Calling Convention for Arithmetic Functions:**
-
-```
-_MultiplyI32:
-  Input:  ax:bx = multiplicand (low:high)
-          cx:dx = multiplier (low:high)
-  Output: di:si = product (high:low)
-  Return: retf (far return)
-
-_DivideI32:
-  Input:  ax:bx = dividend (low:high)
-          cx:dx = divisor (low:high)
-  Output: di:si = quotient (high:low)
-  Return: retf (far return)
-```
-
-## Architecture
-
-### Data Model
-
-The i286 target uses a 32-bit data model emulated on the 16-bit 80286:
-
-| Type | Size | Notes |
-|------|------|-------|
-| `char` | 8-bit | Native |
-| `short` | 16-bit | Native |
-| `int` | 32-bit | Emulated (DX:AX) |
-| `long` | 32-bit | Emulated (DX:AX) |
-| `long long` | 64-bit | Emulated (future) |
-| `pointer` | 32-bit | Emulated (DX:AX), low 16 bits used initially |
-| `size_t` | 32-bit | Emulated |
-| `float` | 32-bit | 80287 FPU |
-| `double` | 64-bit | 80287 FPU |
-| `long double` | 80-bit | 80287 FPU native |
-
-### Memory Model
-
-**Initial (single 64K segment)**:
-- All data in DGROUP segment
-- DS = ES = SS = DGROUP
-- 32-bit pointers: only low 16 bits used as offset within segment
-- Stack, data, BSS all in same segment
-
-**Future (linear-to-segment emulation)**:
-- 32-bit pointers = segment:offset pair
-- Memory access via segment override prefixes
-- Stack management via SS:SP pair
-
-### Syscall Interface
-
-musl's `syscall()` interface is mapped to OS/2 Dos* API calls:
-
-| musl Syscall | OS/2 API |
-|--------------|----------|
-| `read` | DosRead |
-| `write` | DosWrite |
-| `open` | DosOpen |
-| `close` | DosClose |
-| `lseek` | DosChgFilePtr |
-| `exit` | DosExit |
-| `getpid` | DosGetPID |
-| `sleep` | DosSleep |
-| `chdir` | DosChDir |
-| `unlink` | DosDelete |
-| `mkdir` | DosMkDir |
-| `rmdir` | DosRmDir |
-| `rename` | DosMove |
-
-### FPU Support
-
-The 80287 FPU is required (no software emulation):
-- All floating-point operations use FPU instructions
-- FPU register stack managed by code generator
-- Supports float (32-bit), double (64-bit), long double (80-bit)
-
-## Limitations (Initial Port)
-
-### Not Implemented
-
-- **Threads**: Single-threaded only, thread functions return ENOSYS
-- **Signals**: No signal handling
-- **Dynamic linking**: Static linking only
-- **Sockets**: No network support
-- **mmap**: Uses DosAllocSeg/DosFreeSeg (simplified)
-- **64-bit long long**: Not fully implemented
-- **Linear-to-segment**: 64K segment limit
-
-### Work in Progress
-
-- File I/O (open, stat, fcntl)
-- Time functions
-- Complete syscall mapping
-- Runtime library optimization
-
-## Testing
-
-### Basic Test
+### Example: Minimal printf test
 
 ```c
-#include <stdio.h>
+#include <stdarg.h>
 
-int main() {
-    printf("Hello from musl on OS/2 1.x!\n");
+extern long __os2_syscall3(long n, long a1, long a2, long a3);
+
+int printf(const char *fmt, ...)
+{
+    va_list ap;
+    va_start(ap, fmt);
+    int x = va_arg(ap, int);
+    // ... format and print x ...
+    va_end(ap);
     return 0;
 }
 ```
 
-Compile and run:
+This compiles with the llvm-i286 codegen because:
+1. `va_start` is lowered to inline codegen (no external `llvm_va_start` call)
+2. `va_arg` uses standard C dereference (codegen handles SS-derived pointers)
+3. `va_end` is a no-op (codegen skips it)
+
+## Building the musl Library
+
+The musl library is not yet built as a standalone static library for llvm-i286.
+Currently, only selected functions are compiled inline with user code.
+
+### Future: Full musl build
+
+To build a full musl static library for llvm-i286:
+
 ```bash
-clang -target i286-unknown-os2 -std=c99 -ffreestanding -nostdinc \
-      -I musl/include -I musl/arch/i286 -I musl/arch/generic \
-      -o test.ll -S -emit-llvm test.c
-
-llvm-i286 test.ll -o test.asm
-
-nasm -f obj -o test.o test.asm
-
-wlink system os2 d all path ~/ow/open-watcom-v2/rel/lib286:~/ow/open-watcom-v2/lib286/os2 \
-      library ~/ow/open-watcom-v2/lib286/os2/os2.lib \
-      library build/runtime/runtime.lib \
-      name test.exe file test.o
+# Configure musl for i286 target
+./musl/configure \
+  --target=i386-pc-linux-gnu \
+  --host=i386-pc-linux-gnu \
+  --prefix=/opt/musl-i286 \
+  CC=clang-15 \
+  CFLAGS="-m32 -ffreestanding"
 ```
 
-## Future Enhancements
+This is not yet implemented. Current tests use inline helpers from
+`tests/os2/output_helper.h` instead.
 
-1. **Multi-segment support**: Linear-to-segment emulation for >64K programs
-2. **Thread support**: OS/2 thread API integration
-3. **Signal handling**: OS/2 exception handling
-4. **Dynamic linking**: NE format dynamic linker
-5. **64-bit arithmetic**: Complete long long support
-6. **Optimized runtime**: Hand-optimized 32-bit arithmetic routines
-7. **Extended syscall support**: Complete OS/2 API coverage
+## Current Test Coverage
+
+Tests that use musl features:
+
+| Test | musl Feature Used | Status |
+|------|-------------------|--------|
+| test_printf_companion | printf_min.c, va_start | Compiles, links, runtime crash |
+| test_printf_simple | stdio.h printf | Expected to fail (known limitation) |
+
+Most other tests use inline `output_helper.h` helpers instead of musl functions.
+
+## Porting Status by Category
+
+| Category | Status | Notes |
+|----------|--------|-------|
+| **Headers** | Mostly ported | Types, syscalls, atomic, CRT |
+| **Stdio** | Minimal | printf_min.c only |
+| **String** | Not ported | Tests use inline helpers |
+| **Memory** | Not ported | No malloc/free |
+| **File I/O** | Not ported | No fopen/fread/fwrite |
+| **Math** | Not ported | No floating point support |
+| **Time** | Not ported | No time/date functions |
+| **Threads** | Not ported | No pthread support |
+| **Locale** | Not ported | No locale support |
+
+## Known Issues
+
+1. **va_arg on i286**: The custom `va_arg` macro in `musl/include/stdarg.h` assumes
+   that va_list pointers are SS-derived. This works because varargs are on the caller's
+   stack frame, which is in SS. The codegen tracks this via `state.ssDerivedPtrVregs`.
+
+2. **Printf formatting**: The minimal printf in `musl_port/printf_min.c` only handles
+   `%d`, `%s`, `%%`, and literal characters. Complex format specifiers require additional
+   porting work.
+
+3. **No standard library**: There is no built musl static library. Tests that need
+   string/number formatting use inline helpers from `tests/os2/output_helper.h`.
+
+4. **Segmented memory**: The i286 segmented memory model requires special handling for
+   far pointers (selector:offset pairs). The codegen handles this via SS-derived pointer
+   tracking, but some musl code may not yet be compatible.
+
+## Future Work
+
+- Port more string functions (strlen, strcmp, memcpy, memset)
+- Port file I/O functions (fopen, fread, fwrite, fclose)
+- Port memory allocation (malloc, free, realloc)
+- Port more printf format specifiers (%f, %x, %ld, etc.)
+- Build a full musl static library for llvm-i286
+- Add thread support (pthread)
+- Add locale support
 
 ## References
 
-- [musl libc](https://musl.libc.org/)
-- [OS/2 Programming Reference](os2_examples/OS2API.TXT)
-- [80286 Programmer's Reference](https://en.wikipedia.org/wiki/Intel_80286)
-- [NASM Documentation](https://nasm.us/doc/)
-
-## License
-
-musl libc is licensed under the MIT license. See the musl source tree for details.
-
-This port (architecture-specific files and build scripts) is provided under the same license as the llvm-i286 project.
+- musl libc: https://musl.libc.org/
+- OS/2 1.x API: OS/2 Programmer's Reference
+- 80286 architecture: Intel 80286 Processor Manual
