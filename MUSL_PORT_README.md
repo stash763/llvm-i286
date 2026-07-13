@@ -175,3 +175,114 @@ Most other tests use inline `output_helper.h` helpers instead of musl functions.
 - musl libc: https://musl.libc.org/
 - OS/2 1.x API: OS/2 Programmer's Reference
 - 80286 architecture: Intel 80286 Processor Manual
+
+## c-testsuite Integration
+
+### Overview
+
+The [c-testsuite](https://github.com/nickg/c-testsuite) is a comprehensive C compiler test suite with 220 test cases covering a broad range of C language features. We have integrated it into our test infrastructure to systematically validate musl porting progress and identify codegen issues.
+
+### Running c-testsuite
+
+```bash
+# Run all c-testsuite tests
+bash c_testsuite_run.sh
+
+# Run a single test
+./c-testsuite/runners/single-exec/llvm-i286 c-testsuite/tests/single-exec/00179.c
+```
+
+### Test Infrastructure
+
+- **Runner script**: `c-testsuite/runners/single-exec/llvm-i286`
+- **Skip list**: `c-testsuite/runners/single-exec/llvm-i286.skip`
+- **Main runner**: `c_testsuite_run.sh`
+
+The runner performs the full compilation pipeline:
+1. C → LLVM IR (via `clang_i286`)
+2. LLVM IR → NASM assembly (via `llvm-i286`)
+3. Assembly → object file (via `nasm`)
+4. Object file → OS/2 executable (via `wlink`)
+5. Execute under `lx_loader` (OS/2 executable emulator)
+6. Compare output against expected results
+
+### Porting Plan
+
+The c-testsuite integration drives a systematic porting plan organized into phases:
+
+| Phase | Focus | Target Tests Passing |
+|-------|-------|---------------------|
+| **0** | Infrastructure (runner, skip lists) | 0 |
+| **1** | String, ctype, basic stdlib | 50-80 |
+| **2** | Stdio (file I/O via OS/2 API) | 80-120 |
+| **3** | malloc/free (memory allocation) | 85-130 |
+| **4** | Math functions | 90-140 |
+| **5** | Time, search, misc | 95-150 |
+| **6** | Ongoing codegen fixes | 100-170+ |
+
+### Current Status (Phase 1 in Progress)
+
+**String functions** (being ported):
+- ✅ `memcpy`, `memmove`, `memset` (already ported)
+- ✅ `strlen`, `strcmp`, `strcpy`, `strchr`, `strrchr`, `strncasecmp`, `strcasecmp`, `strlcpy` (compile cleanly)
+- ⏳ `strcat`, `strncpy`, `strncat`, `strstr`, `strtok`, `strdup`, `strerror` (to port)
+
+**Ctype functions** (being ported):
+- ✅ `isalpha`, `isdigit`, `isupper`, `islower`, `isspace`, `isprint`, `isgraph`, etc.
+- ✅ `__ctype_b_loc`, `__ctype_tolower_loc`, `__ctype_toupper_loc`
+- ⏳ `tolower`, `toupper`, `toascii` (to port)
+
+**Stdlib functions** (being ported):
+- ✅ `atoi`, `atol`, `atoll`, `abs`, `labs`, `llabs`, `div`, `ldiv`, `lldiv`
+- ✅ `exit`, `_Exit`, `abort`, `atexit`
+- ⏳ `bsearch`, `qsort` (need include path fixes)
+
+**Stdio** (not yet ported):
+- ❌ `fopen`, `fread`, `fwrite`, `fclose`
+- ❌ `printf`, `fprintf`, `sprintf`, `snprintf`
+- ❌ `scanf`, `fscanf`, `sscanf`
+
+**Math** (not yet ported):
+- ❌ All math functions (sin, cos, sqrt, etc.)
+
+**Memory allocation** (not yet ported):
+- ❌ `malloc`, `free`, `realloc`, `calloc`
+
+### OS/2 API Reference
+
+For implementing missing platform support (stdio, malloc, threads), we use:
+- **Primary reference**: `os2_examples/OS2API.TXT` (28,000+ line OS/2 1.x API manual)
+- **Syscall numbers**: `2ine_debugger/os2imports.pl`
+- **Existing glue code**: `os2_glue/` (libc_init.c, stdinit.c, lockfile.c)
+- **Runtime library**: `runtime/runtime.lib` (div32, mul32, os2_syscall, itoa, printnum)
+
+### Key OS/2 APIs Used
+
+| Category | OS/2 Function | Syscall # | musl Function |
+|----------|---------------|-----------|---------------|
+| **Stdout** | `DosWrite` | 81 | `printf`, `fprintf`, `fwrite` |
+| **Stdin** | `DosRead` | 79 | `scanf`, `fscanf`, `fread` |
+| **File open** | `DosOpen` | 70 | `fopen` |
+| **File close** | `DosClose` | 59 | `fclose` |
+| **File seek** | `DosChgFilePtr` | — | `fseek`, `ftell` |
+| **Memory alloc** | `DosAllocSeg` | 34 | `malloc` |
+| **Memory free** | `DosFreeSeg` | 39 | `free` |
+| **Exit** | `DosExit` | 5 | `exit`, `_Exit` |
+
+### Test Categories by c-testsuite Tags
+
+| Tag | Count | Description |
+|-----|-------|-------------|
+| `c89` | 174 | Tests valid in C89/C90 (ANSI C) |
+| `c99` | 43 | Tests requiring C99 features |
+| `c11` | 2 | Tests requiring C11 features |
+| `portable` | 218 | Tests that should work across all platforms |
+| `needs-cpp` | 96 | Tests that require the C preprocessor |
+| `needs-libc` | 63 | Tests that depend on the C standard library |
+
+### References
+
+- c-testsuite: https://github.com/nickg/c-testsuite
+- OS/2 API documentation: `os2_examples/OS2API.TXT`
+- musl libc: https://musl.libc.org/
+- 80286 architecture: Intel 80286 Processor Manual
