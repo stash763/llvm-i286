@@ -26,6 +26,7 @@ static std::vector<LoweredInstruction> lowerBinaryOp(
     bool op1IsConst = false;
     bool op1IsMem = false;
 
+    bool skipPush = false;
     if (irInst.operands.size() >= 2) {
         std::string op1Name = irInst.operands[0].name;
         std::string op2Name = irInst.operands[1].name;
@@ -64,6 +65,31 @@ static std::vector<LoweredInstruction> lowerBinaryOp(
         // If op2 is memory, wrap in brackets
         if (op2IsMem) {
             inst.operands.push_back("[" + op2 + "]");
+        } else if (op2IsConst) {
+            // Check if this is a 32-bit operation or the constant does not fit in 16 bits
+            bool is32 = irInst.resultType && irInst.resultType->bitWidth == 32;
+            int64_t constVal = 0;
+            try { constVal = std::stoll(op2Name); } catch (...) {}
+            bool needsSplit = is32 || constVal > 0xFFFFLL || constVal < -32768LL;
+            if (needsSplit) {
+                // Split into low and high word operations
+                int16_t lowWord = (int16_t)(constVal & 0xFFFF);
+                int16_t highWord = (int16_t)((constVal >> 16) & 0xFFFF);
+                Instruction286 lowInst;
+                lowInst.mnemonic = mnemonic;
+                lowInst.operands.push_back(destReg);
+                lowInst.operands.push_back(std::to_string(lowWord));
+                lowered.instructions.push_back(lowInst);
+                Instruction286 highInst;
+                highInst.mnemonic = mnemonic;
+                highInst.operands.push_back("dx");
+                highInst.operands.push_back(std::to_string(highWord));
+                lowered.instructions.push_back(highInst);
+                skipPush = true;
+            }
+            if (!skipPush) {
+                inst.operands.push_back(op2);
+            }
         } else {
             inst.operands.push_back(op2);
         }
@@ -85,7 +111,9 @@ static std::vector<LoweredInstruction> lowerBinaryOp(
         inst.operands.push_back("bx");
     }
 
-   lowered.instructions.push_back(inst);
+    if (!skipPush) {
+        lowered.instructions.push_back(inst);
+    }
 
     if (!irInst.resultName.empty()) {
         // Check if result is 32-bit

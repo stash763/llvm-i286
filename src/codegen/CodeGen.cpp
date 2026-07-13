@@ -245,6 +245,48 @@ std::string CodeGen::generate(const ir::Module& module) {
                     // Complex initializer: emit as zero-initialized BSS data
                     bssSegment += dataLabel + ":\n";
                     bssSegment += "\tresb " + std::to_string(byteSize) + "\n\n";
+                } else if (initValue.find("getelementptr") != std::string::npos) {
+                    // Handle getelementptr constant expression
+                    std::string gepBase;
+                    int64_t gepOffset = 0;
+                    auto atPos = initValue.find('@');
+                    if (atPos != std::string::npos) {
+                        auto commaPos = initValue.find(',', atPos);
+                        auto closePos = initValue.find(')', atPos);
+                        auto endPos = (commaPos != std::string::npos && commaPos < closePos) ? commaPos : closePos;
+                        if (endPos != std::string::npos) {
+                            gepBase = initValue.substr(atPos + 1, endPos - atPos - 1);
+                        }
+                        auto i64Pos = initValue.find("i64", atPos);
+                        if (i64Pos != std::string::npos) {
+                            std::string numStr;
+                            for (size_t i = i64Pos + 3; i < initValue.size(); i++) {
+                                char c = initValue[i];
+                                if ((c >= '0' && c <= '9') || c == '-') {
+                                    numStr += c;
+                                } else if (!numStr.empty()) {
+                                    break;
+                                }
+                            }
+                            if (!numStr.empty()) {
+                                try { gepOffset = std::stoll(numStr); } catch (...) {}
+                            }
+                        }
+                    }
+                    std::string nasmBase = gepBase;
+                    if (!nasmBase.empty() && nasmBase[0] == '.') {
+                        nasmBase = "_" + nasmBase.substr(1);
+                    }
+                    dataSegment += dataLabel + ":\n";
+                    if (byteSize == 4) {
+                        if (gepOffset != 0) {
+                            dataSegment += "\tdd " + nasmBase + " + " + std::to_string(gepOffset) + "\n\n";
+                        } else {
+                            dataSegment += "\tdd " + nasmBase + "\n\n";
+                        }
+                    } else {
+                        dataSegment += "\tdw " + nasmBase + "\n\n";
+                    }
                 } else {
                     // Strip @ prefix from global references for NASM compatibility
                     if (!initValue.empty() && initValue[0] == '@') {
@@ -327,6 +369,7 @@ std::string CodeGen::generate(const ir::Module& module) {
     // These must match the tested runtime in ./runtime/
     externFuncs.push_back("_MultiplyI32");
     externFuncs.push_back("_DivideI32");
+    externFuncs.push_back("_DivideU32");
     
     // Wrap in module structure
     return emitter.emitModule(
