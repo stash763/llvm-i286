@@ -43,6 +43,9 @@ struct SelectorState {
     // Counter for generating unique labels
     int labelCounter = 0;
 
+    // Pending trampolines for indirect far calls (emitted at end of function)
+    std::vector<LoweredInstruction> pendingTrampolines;
+
     // Current function being processed
     const ir::Function* currentFunc = nullptr;
 

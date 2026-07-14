@@ -196,6 +196,12 @@ std::vector<LoweredInstruction> InstructionSelector::lowerFunction(const ir::Fun
         lowered.insert(lowered.end(), bbLowered.begin(), bbLowered.end());
     }
 
+    // Emit pending trampolines (for indirect far calls) at end of function
+    for (const auto& tramp : impl->pendingTrampolines) {
+        lowered.push_back(tramp);
+    }
+    impl->pendingTrampolines.clear();
+
     return lowered;
 }
 

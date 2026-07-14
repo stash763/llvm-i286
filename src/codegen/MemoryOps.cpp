@@ -113,7 +113,7 @@ std::vector<LoweredInstruction> lowerStore(SelectorState& state,
                 xorDx.operands.push_back("dx");
                 lowered.instructions.push_back(xorDx);
            } else if (isGlobal) {
-                // Global variable: load its address
+                // Global variable or function: load its far pointer (seg:offset)
                 // The global name starts with @, remove it for NASM
                 std::string globalName = valName.substr(1); // Remove @ prefix
                 // If name starts with '.', replace with '_' for NASM compatibility
@@ -122,18 +122,32 @@ std::vector<LoweredInstruction> lowerStore(SelectorState& state,
                 }
                 // Mangle NASM reserved words
                 globalName = safeNasmName(globalName);
-                // For 16-bit protected mode with flat memory model
+                // Check if this is a function (in funcParamBitWidths)
+                bool isFunc = (state.funcParamBitWidths.find(globalName) !=
+                              state.funcParamBitWidths.end());
+                // Load offset (low word)
                 Instruction286 movAx;
                 movAx.mnemonic = "mov";
                 movAx.operands.push_back("ax");
                 movAx.operands.push_back(globalName);
                 lowered.instructions.push_back(movAx);
-                // High word (segment) is DGROUP selector, but for flat model we can use 0
-                Instruction286 xorDx;
-                xorDx.mnemonic = "xor";
-                xorDx.operands.push_back("dx");
-                xorDx.operands.push_back("dx");
-                lowered.instructions.push_back(xorDx);
+                // Load segment selector (high word)
+                if (isFunc) {
+                    // Function: use CS (all code is in _TEXT segment)
+                    // seg fixup doesn't work in OMF/lx_loader, so use CS directly
+                    Instruction286 movDx;
+                    movDx.mnemonic = "mov";
+                    movDx.operands.push_back("dx");
+                    movDx.operands.push_back("cs");
+                    lowered.instructions.push_back(movDx);
+                } else {
+                    // Data global: use DS (all data is in DGROUP)
+                    Instruction286 movDx;
+                    movDx.mnemonic = "mov";
+                    movDx.operands.push_back("dx");
+                    movDx.operands.push_back("ds");
+                    lowered.instructions.push_back(movDx);
+                }
             } else if (isRegOrParam) {
                 // Check if value is in vregToPhys (register or stack location)
                 bool valFound = state.frame.hasSlot(valName);

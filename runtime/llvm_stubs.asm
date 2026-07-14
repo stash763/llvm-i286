@@ -201,10 +201,17 @@ llvm.experimental.constrained.uitofp.f80.i32:
 ; musl internal stubs
 global __stdio_exit_needed
 global ___errno_location
+global __malloc_replaced
+global __aligned_alloc_replaced
 
 __stdio_exit_needed:
     retf
 
 ___errno_location:
     xor ax, ax
+    retf
+
+__malloc_replaced:
+__aligned_alloc_replaced:
+    dw 0
     retf

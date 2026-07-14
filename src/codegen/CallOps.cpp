@@ -979,13 +979,56 @@ std::vector<LoweredInstruction> lowerCall(SelectorState& state,
                 loadPtr.operands.push_back("bx");
                 loadPtr.operands.push_back("[" + calleeReg + "]");
                 lowered.instructions.push_back(loadPtr);
-                
-                Instruction286 callIndirect;
-                callIndirect.mnemonic = "call";
-                callIndirect.operands.push_back("far [bx]");
-                lowered.instructions.push_back(callIndirect);
+
+                // Load far pointer from [ss:bx] into dx:ax
+                // bx points to a stack location (bp-relative), so use SS prefix
+                Instruction286 loadOff;
+                loadOff.mnemonic = "mov";
+                loadOff.operands.push_back("ax");
+                loadOff.operands.push_back("[ss:bx]");
+                lowered.instructions.push_back(loadOff);
+
+                Instruction286 loadSeg;
+                loadSeg.mnemonic = "mov";
+                loadSeg.operands.push_back("dx");
+                loadSeg.operands.push_back("[ss:bx+2]");
+                lowered.instructions.push_back(loadSeg);
+
+                // Push return CS
+                Instruction286 pushCs;
+                pushCs.mnemonic = "push";
+                pushCs.operands.push_back("cs");
+                lowered.instructions.push_back(pushCs);
+
+                // call near to trampoline - pushes return IP (continuation addr)
+                std::string trampLabel = state.nextLabel(".indirect_far_");
+                Instruction286 callTramp;
+                callTramp.mnemonic = "call";
+                callTramp.operands.push_back(trampLabel);
+                lowered.instructions.push_back(callTramp);
+
+                // Trampoline (emitted at end of function): push dx, push ax, retf
+                // Stack at trampoline: [return_IP][return_CS]
+                // After push dx, push ax: [target_off][target_seg][return_IP][return_CS]
+                // retf: pops IP=target_off, CS=target_seg → jumps to target
+                // Target retf: pops IP=return_IP, CS=return_CS → returns to continuation
+                LoweredInstruction trampBlock;
+                Instruction286 pushSeg;
+                pushSeg.mnemonic = "push";
+                pushSeg.operands.push_back("dx");
+                trampBlock.instructions.push_back(pushSeg);
+                Instruction286 pushOff;
+                pushOff.mnemonic = "push";
+                pushOff.operands.push_back("ax");
+                trampBlock.instructions.push_back(pushOff);
+                Instruction286 retfInst;
+                retfInst.mnemonic = "retf";
+                trampBlock.instructions.push_back(retfInst);
+                trampBlock.label = trampLabel;
+                state.pendingTrampolines.push_back(trampBlock);
             } else {
                 // Value is in a register - call through that register
+                // This shouldn't happen for far calls, but handle it
                 Instruction286 callIndirect;
                 callIndirect.mnemonic = "call";
                 callIndirect.operands.push_back("far " + calleeReg);
