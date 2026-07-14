@@ -2,6 +2,7 @@
 // Extracted from InstructionSelect.cpp
 
 #include "codegen/InstructionSelectInternal.h"
+#include "codegen/NasmSafe.h"
 
 #include <string>
 
@@ -119,6 +120,8 @@ std::vector<LoweredInstruction> lowerStore(SelectorState& state,
                 if (!globalName.empty() && globalName[0] == '.') {
                     globalName[0] = '_';
                 }
+                // Mangle NASM reserved words
+                globalName = safeNasmName(globalName);
                 // For 16-bit protected mode with flat memory model
                 Instruction286 movAx;
                 movAx.mnemonic = "mov";
@@ -229,7 +232,17 @@ std::vector<LoweredInstruction> lowerStore(SelectorState& state,
                 // Use [ss:bx] for SS-derived, [bx] for DS-derived
                 dest = "[" + segPrefix + "bx]";
             } else {
-                dest = ptrReg;
+                // Register pointer - move to bx for addressing if needed
+                if (ptrReg != "bx" && ptrReg != "si" && ptrReg != "di") {
+                    Instruction286 movPtr;
+                    movPtr.mnemonic = "mov";
+                    movPtr.operands.push_back("bx");
+                    movPtr.operands.push_back(ptrReg);
+                    lowered.instructions.push_back(movPtr);
+                    dest = "[" + segPrefix + "bx]";
+                } else {
+                    dest = "[" + segPrefix + ptrReg + "]";
+                }
             }
 
             // Store low word to [ptr]
@@ -257,7 +270,8 @@ std::vector<LoweredInstruction> lowerStore(SelectorState& state,
                 // Non-alloca: use bx+2 with segment override
                 storeHigh.operands.push_back("[" + segPrefix + std::string("bx+2") + "]");
             } else {
-                storeHigh.operands.push_back("[" + ptrReg + "+2]");
+                // Register pointer - use bx+2 (ptrReg was already moved to bx above)
+                storeHigh.operands.push_back("[" + segPrefix + std::string("bx+2") + "]");
             }
             storeHigh.operands.push_back("dx");
             lowered.instructions.push_back(storeHigh);
@@ -321,7 +335,17 @@ std::vector<LoweredInstruction> lowerStore(SelectorState& state,
                 // Use [ss:bx] for SS-derived, [bx] for DS-derived
                 dest = "[" + segPrefix + "bx]";
             } else {
-                dest = ptrReg;
+                // Register pointer - move to bx for addressing if needed
+                if (ptrReg != "bx" && ptrReg != "si" && ptrReg != "di") {
+                    Instruction286 movPtr;
+                    movPtr.mnemonic = "mov";
+                    movPtr.operands.push_back("bx");
+                    movPtr.operands.push_back(ptrReg);
+                    lowered.instructions.push_back(movPtr);
+                    dest = "[" + segPrefix + "bx]";
+                } else {
+                    dest = "[" + segPrefix + ptrReg + "]";
+                }
             }
 
             // Store to [ptr]

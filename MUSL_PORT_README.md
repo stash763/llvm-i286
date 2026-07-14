@@ -7,27 +7,51 @@ targeting OS/2 1.x in 16-bit protected mode on Intel 80286 processors.
 
 ## Current Status
 
+### Phase 1 Complete: 143/143 musl functions compile cleanly
+
+**String functions** (74/74 ✅):
+- All core memory ops: `memcpy`, `memmove`, `memset`, `memcmp`, `memchr`
+- All string operations: `strlen`, `strcmp`, `strcpy`, `strcat`, `strstr`, `strtok`
+- All wide character variants: `wcscmp`, `wcsncmp`, `wcscpy`, `wcschr`, etc.
+- Error string functions: `strerror`, `strerror_r`, `strsignal`
+
+**Ctype functions** (37/37 ✅):
+- All character classification: `isalpha`, `isdigit`, `isupper`, `islower`, etc.
+- All character conversion: `tolower`, `toupper`, `toascii`
+- All wide character variants: `iswalnum`, `iswalpha`, `iswctype`, etc.
+
+**Stdlib functions** (22/22 ✅):
+- All conversion: `atoi`, `atol`, `atof`, `strtod`, `strtol`
+- All absolute/division: `abs`, `labs`, `div`, `ldiv`, `imaxabs`, `imaxdiv`
+- Search/sort: `bsearch`, `qsort`, `qsort_nr`
+
+**Exit functions** (8/8 ✅):
+- `abort`, `atexit`, `at_quick_exit`, `exit`, `_Exit`, `quick_exit`
+
+**Errno functions** (2/2 ✅):
+- `__errno_location`, `strerror`
+
 ### Working
 
 - **Header files**: Type definitions, syscall numbers, CRT startup for i286 architecture
   - `musl/arch/i286/bits/alltypes.h` — 32-bit data model types (int=32, long=32, ptr=32)
-  - `musl/arch/i286/syscall_arch.h` — OS/2 syscall numbers
+  - `musl/arch/i286/syscall_arch.h` — OS/2 syscall numbers (with stubs for missing syscalls)
+  - `musl/arch/i286/bits/errno.h` — 150+ errno values
   - `musl/arch/i286/atomic_arch.h` — Atomic operations for i286
   - `musl/arch/i286/crt_arch.h` — CRT startup code
   - `musl/include/stdarg.h` — Custom `va_arg` macro (no inline asm, uses codegen SS-derived pointers)
-- **Syscall dispatch**: `__os2_syscall3` for read/write/exit syscalls
+- **Syscall dispatch**: `__os2_syscall{0..6}` for OS/2 API calls
 - **printf_min**: Minimal printf with `%d`, `%s`, `%%`, and literal characters
 - **va_start inline**: Codegen generates inline `llvm.va.start` (no external runtime call)
+- **Runtime library**: `runtime/runtime.lib` with `_MultiplyI32`, `_DivideI32`, `_DivideU32`, `itoa`, `printnum`, `__os2_syscall{0..6}`
 
-### Limitations
+### Limitations (Phase 2+)
 
-- **No file I/O**: fopen/fread/fwrite/fclose not ported
-- **No malloc/free**: Memory allocation not supported
-- **No string functions**: strlen/strcmp/memcpy not ported (tests use inline helpers)
+- **No file I/O**: fopen/fread/fwrite/fclose not ported (next: Phase 2)
+- **No malloc/free**: Memory allocation not supported (next: Phase 3)
 - **Limited printf**: Only `%d`, `%s`, `%%` supported (no `%f`, `%x`, `%ld`, etc.)
 - **No threads**: No pthread support
 - **No locale**: No locale support
-- **No wchar**: Wide character support not implemented
 
 ## Directory Structure
 

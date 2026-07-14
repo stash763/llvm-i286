@@ -5,6 +5,7 @@
 #include "ir/IrParser.h"
 #include "codegen/InstructionSelect.h"
 #include "codegen/Emitter.h"
+#include "codegen/NasmSafe.h"
 
 #include <iostream>
 #include <set>
@@ -81,7 +82,7 @@ std::string CodeGen::generate(const ir::Module& module) {
             // Skip llvm.va_start and llvm.va_end (generated inline by codegen)
             std::string funcName = func->name;
             if (funcName.find("llvm.memcpy") != std::string::npos) {
-                continue; // Skip llvm.memcpy entirely
+                funcName = "memcpy"; // Rename to plain memcpy
             }
             if (funcName == "llvm.va_start" || funcName == "llvm.va_end") {
                 continue; // Skip - generated inline
@@ -130,6 +131,8 @@ std::string CodeGen::generate(const ir::Module& module) {
         if (!dataLabel.empty() && dataLabel[0] == '.') {
             dataLabel = "_" + dataLabel.substr(1);
         }
+        // Mangle NASM reserved words
+        dataLabel = safeNasmName(dataLabel);
         
         // Check if this is an uninitialized global (BSS)
         bool isBSS = !gv->initializer || 
@@ -277,6 +280,8 @@ std::string CodeGen::generate(const ir::Module& module) {
                     if (!nasmBase.empty() && nasmBase[0] == '.') {
                         nasmBase = "_" + nasmBase.substr(1);
                     }
+                    // Mangle NASM reserved words
+                    nasmBase = safeNasmName(nasmBase);
                     dataSegment += dataLabel + ":\n";
                     if (byteSize == 4) {
                         if (gepOffset != 0) {
@@ -296,6 +301,8 @@ std::string CodeGen::generate(const ir::Module& module) {
                     if (!initValue.empty() && initValue[0] == '.') {
                         initValue = "_" + initValue.substr(1);
                     }
+                    // Mangle NASM reserved words
+                    initValue = safeNasmName(initValue);
                     
                     dataSegment += dataLabel + ":\n";
                     if (byteSize == 4) {
@@ -353,6 +360,8 @@ std::string CodeGen::generate(const ir::Module& module) {
                     if (!initValue.empty() && initValue[0] == '.') {
                         initValue = "_" + initValue.substr(1);
                     }
+                    // Mangle NASM reserved words
+                    initValue = safeNasmName(initValue);
                     
                     dataSegment += dataLabel + ":\n";
                     if (byteSize == 4) {

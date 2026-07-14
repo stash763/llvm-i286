@@ -2,6 +2,7 @@
 // Handler for call instruction lowering
 
 #include "codegen/InstructionSelectInternal.h"
+#include "codegen/NasmSafe.h"
 
 #include <string>
 #include <vector>
@@ -32,6 +33,12 @@ std::vector<LoweredInstruction> lowerCall(SelectorState& state,
     bool isLLVMMemcpy = (callee.find("llvm.memcpy") != std::string::npos);
     if (isLLVMMemcpy) {
         callee = "memcpy";
+    }
+    
+    // Skip inline assembly calls (compiler barriers, etc.)
+    if (callee.find("asm") == 0 || callee.find("asm sideeffect") == 0) {
+        // Inline asm is a no-op for our purposes - just return empty lowered
+        return loweredVec;
     }
     
     // Detect llvm.va_start for inline generation
@@ -173,6 +180,10 @@ std::vector<LoweredInstruction> lowerCall(SelectorState& state,
         } else if (isGlobal && isPtrToIntExpr && !ptrToIntGlobalName.empty()) {
             // ptrtoint expression: use the extracted global name directly
             nasmName = ptrToIntGlobalName;
+        }
+        // Mangle NASM reserved words
+        if (!nasmName.empty()) {
+            nasmName = safeNasmName(nasmName);
         }
 
         // Check if argument is a vreg/parameter (either register-allocated or stack-allocated)

@@ -2,6 +2,7 @@
 // Non-stack-related utilities (stack management now handled by StackFrame)
 
 #include "codegen/InstructionSelectInternal.h"
+#include "codegen/NasmSafe.h"
 
 #include <string>
 
@@ -27,7 +28,8 @@ bool isGlobalVar(const std::string& name) {
 // Convert global variable name to NASM format (".foo" -> "_foo")
 std::string toNasmGlobal(const std::string& name) {
     if (isGlobalVar(name) && name.size() > 1) {
-        return "_" + name.substr(1);
+        std::string result = "_" + name.substr(1);
+        return safeNasmName(result);
     }
     return name;
 }

@@ -133,6 +133,7 @@ add_library(codegen
     src/codegen/ArithmeticOps.cpp
     src/codegen/BitwiseOps.cpp
     src/codegen/MemoryOps.cpp
+    src/codegen/NasmSafe.cpp
     src/codegen/RegisterAlloc.cpp
     src/codegen/Emitter.cpp
     src/codegen/Addressing.cpp
