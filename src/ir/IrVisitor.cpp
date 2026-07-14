@@ -178,6 +178,14 @@ std::unique_ptr<Module> IrVisitor::visitModule(LLVMIRParser::CompilationUnitCont
         } else if (entity->indirectSymbolDef()) {
             // Handle alias declarations: @alias = alias ... @target
             visitIndirectSymbolDef(entity->indirectSymbolDef());
+        } else if (entity->typeDef()) {
+            // Handle type definitions: %struct.NAME = type { i32, ptr, ... }
+            auto* td = entity->typeDef();
+            if (td->LocalIdent() && td->type()) {
+                std::string typeName = td->LocalIdent()->getText();
+                auto type = parseType(td->type());
+                currentModule->typeDefinitions[typeName] = std::move(type);
+            }
         }
     }
     
@@ -389,6 +397,26 @@ std::unique_ptr<Type> IrVisitor::parseType(LLVMIRParser::TypeContext *ctx) {
         type->kind = TypeKind::Pointer;
         type->elementType = Type::makeVoid();
         type->bitWidth = 32;  // 32-bit pointers (i386 target)
+        return type;
+    } else if (ctx->structType()) {
+        auto type = std::make_unique<Type>();
+        type->kind = TypeKind::Struct;
+        for (auto* fieldCtx : ctx->structType()->type()) {
+            type->structElements.push_back(parseType(fieldCtx));
+        }
+        return type;
+    } else if (ctx->namedType()) {
+        auto type = std::make_unique<Type>();
+        type->kind = TypeKind::Named;
+        std::string name = ctx->namedType()->LocalIdent()->getText();
+        type->name = name;
+        return type;
+    } else if (ctx->arrayType()) {
+        auto type = std::make_unique<Type>();
+        type->kind = TypeKind::Array;
+        type->elementType = parseType(ctx->arrayType()->type());
+        std::string numStr = ctx->arrayType()->IntLit()->getText();
+        type->numElements = std::stoi(numStr);
         return type;
     }
     return Type::makeVoid();

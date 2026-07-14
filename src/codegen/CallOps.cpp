@@ -7,9 +7,253 @@
 #include <string>
 #include <vector>
 #include <cstdint>
+#include <sstream>
 
 namespace llvm_i286 {
 namespace codegen {
+
+// Compute the size in bytes of an LLVM IR type
+static int64_t typeSizeBytes(const ir::Type* type,
+                             const std::map<std::string, std::unique_ptr<ir::Type>>* typeDefs) {
+    if (!type) return 0;
+    switch (type->kind) {
+        case ir::TypeKind::Integer:
+            return type->bitWidth / 8;
+        case ir::TypeKind::Pointer:
+            return 4; // 32-bit pointer
+        case ir::TypeKind::Array:
+            return (int64_t)type->numElements * typeSizeBytes(type->elementType.get(), typeDefs);
+        case ir::TypeKind::Struct: {
+            int64_t size = 0;
+            for (const auto& elem : type->structElements) {
+                size += typeSizeBytes(elem.get(), typeDefs);
+            }
+            return size;
+        }
+        case ir::TypeKind::Named: {
+            if (typeDefs) {
+                auto it = typeDefs->find(type->name);
+                if (it != typeDefs->end()) {
+                    return typeSizeBytes(it->second.get(), typeDefs);
+                }
+            }
+            return 0;
+        }
+        default:
+            return 0;
+    }
+}
+
+// Parse a type name from a GEP string starting at position pos
+// Returns the type name and updates pos to point after the type
+static std::string parseTypeName(const std::string& str, size_t& pos) {
+    size_t start = pos;
+    // Skip leading whitespace
+    while (start < str.size() && str[start] == ' ') start++;
+    
+    if (start >= str.size()) return "";
+    
+    if (str[start] == '%') {
+        // Named type: %struct.NAME or %TYPE
+        size_t end = start;
+        while (end < str.size() && str[end] != ',' && str[end] != ')' && str[end] != ' ') end++;
+        pos = end;
+        return str.substr(start, end - start);
+    }
+    
+    // Array type: [N x TYPE]
+    if (str[start] == '[') {
+        int depth = 1;
+        size_t end = start + 1;
+        while (end < str.size() && depth > 0) {
+            if (str[end] == '[') depth++;
+            else if (str[end] == ']') depth--;
+            end++;
+        }
+        pos = end;
+        return str.substr(start, end - start);
+    }
+    
+    // Simple type: i8, i16, i32, i64, ptr, etc.
+    size_t end = start;
+    while (end < str.size() && str[end] != ',' && str[end] != ')' && str[end] != ' ') end++;
+    pos = end;
+    return str.substr(start, end - start);
+}
+
+// Compute byte offset for a GEP constant expression
+// GEP format: getelementptr [inbounds] (TYPE, ptr @name, i32 N, i32 M, ...)
+static int64_t computeGEPByteOffset(const std::string& gepStr,
+                                    const std::map<std::string, std::unique_ptr<ir::Type>>* typeDefs) {
+    // Find the opening paren after getelementptr
+    auto parenPos = gepStr.find('(');
+    if (parenPos == std::string::npos) return 0;
+
+    size_t pos = parenPos + 1;
+    // Parse source type
+    std::string sourceType = parseTypeName(gepStr, pos);
+
+    // Skip comma and spaces
+    while (pos < gepStr.size() && (gepStr[pos] == ',' || gepStr[pos] == ' ')) pos++;
+
+    // Skip "ptr@name" or "ptr @name" part - find the next comma after @
+    auto atPos = gepStr.find('@', pos);
+    if (atPos == std::string::npos) return 0;
+    auto nextComma = gepStr.find(',', atPos);
+    if (nextComma == std::string::npos) return 0;
+    pos = nextComma + 1;
+
+    // Collect all indices
+    std::vector<int64_t> indices;
+    while (pos < gepStr.size()) {
+        // Skip whitespace and commas
+        while (pos < gepStr.size() && (gepStr[pos] == ',' || gepStr[pos] == ' ')) pos++;
+        if (pos >= gepStr.size() || gepStr[pos] == ')') break;
+
+        // Parse type prefix: try i64 first, then i32 (handles space-stripped "i320" as i32+0)
+        if (gepStr.compare(pos, 3, "i64") == 0) {
+            pos += 3;
+        } else if (gepStr.compare(pos, 3, "i32") == 0) {
+            pos += 3;
+        } else {
+            break; // Unknown type prefix
+        }
+
+        // Skip optional space
+        while (pos < gepStr.size() && gepStr[pos] == ' ') pos++;
+
+        // Parse number
+        std::string numStr;
+        if (pos < gepStr.size() && gepStr[pos] == '-') {
+            numStr += '-';
+            pos++;
+        }
+        while (pos < gepStr.size() && isdigit(gepStr[pos])) {
+            numStr += gepStr[pos];
+            pos++;
+        }
+        if (!numStr.empty() && numStr != "-") {
+            indices.push_back(std::stoll(numStr));
+        }
+    }
+
+    if (indices.empty()) return 0;
+
+    // Compute byte offset
+    int64_t offset = 0;
+    
+    // First index: multiply by sizeof(sourceType)
+    int64_t sourceSize = 0;
+    if (sourceType[0] == '%') {
+        // Named struct type
+        if (typeDefs) {
+            auto it = typeDefs->find(sourceType);
+            if (it != typeDefs->end()) {
+                sourceSize = typeSizeBytes(it->second.get(), typeDefs);
+            }
+        }
+    } else if (sourceType[0] == '[') {
+        // Array type: [N x TYPE]
+        // Parse N
+        auto xPos = sourceType.find("x");
+        if (xPos != std::string::npos) {
+            std::string numStr;
+            size_t i = 1; // skip '['
+            while (i < sourceType.size() && (sourceType[i] == ' ' || isdigit(sourceType[i]))) {
+                if (isdigit(sourceType[i])) numStr += sourceType[i];
+                i++;
+            }
+            if (!numStr.empty()) {
+                int64_t n = std::stoll(numStr);
+                // Parse element type
+                std::string elemType;
+                size_t j = xPos + 1;
+                while (j < sourceType.size() && sourceType[j] == ' ') j++;
+                while (j < sourceType.size() && sourceType[j] != ']' && sourceType[j] != ' ') j++;
+                elemType = sourceType.substr(xPos + 1, j - xPos - 1);
+                // Trim
+                while (!elemType.empty() && elemType.back() == ' ') elemType.pop_back();
+                while (!elemType.empty() && elemType.front() == ' ') elemType.erase(0, 1);
+                
+                int64_t elemSize = 0;
+                if (elemType == "i8") elemSize = 1;
+                else if (elemType == "i16") elemSize = 2;
+                else if (elemType == "i32") elemSize = 4;
+                else if (elemType == "i64") elemSize = 8;
+                else if (elemType == "ptr") elemSize = 4;
+                sourceSize = n * elemSize;
+            }
+        }
+    } else {
+        // Simple type
+        if (sourceType == "i8") sourceSize = 1;
+        else if (sourceType == "i16") sourceSize = 2;
+        else if (sourceType == "i32") sourceSize = 4;
+        else if (sourceType == "i64") sourceSize = 8;
+        else if (sourceType == "ptr") sourceSize = 4;
+    }
+    
+    offset += indices[0] * sourceSize;
+    
+    // Subsequent indices: walk through the type
+    const ir::Type* currentType = nullptr;
+    std::unique_ptr<ir::Type> resolvedType;
+    
+    // Resolve the source type
+    if (sourceType[0] == '%' && typeDefs) {
+        auto it = typeDefs->find(sourceType);
+        if (it != typeDefs->end()) {
+            currentType = it->second.get();
+        }
+    } else if (sourceType[0] == '[') {
+        // For arrays, after first index we're at element type
+        // But first index 0 means we're at the array, then second index indexes into array
+        // Actually, first index indexes through source type (array of arrays)
+        // Second index indexes into the array element
+        // For [N x i8], second index M → M * sizeof(i8) = M
+        // We need to handle this differently
+    }
+    
+    for (size_t i = 1; i < indices.size() && currentType; i++) {
+        if (currentType->kind == ir::TypeKind::Struct) {
+            // Struct field index
+            int64_t fieldOffset = 0;
+            for (int j = 0; j < indices[i] && j < (int)currentType->structElements.size(); j++) {
+                fieldOffset += typeSizeBytes(currentType->structElements[j].get(), typeDefs);
+            }
+            offset += fieldOffset;
+            // Move to the field type
+            if (indices[i] >= 0 && indices[i] < (int64_t)currentType->structElements.size()) {
+                const ir::Type* fieldType = currentType->structElements[indices[i]].get();
+                // If it's a named type, resolve it
+                if (fieldType->kind == ir::TypeKind::Named && typeDefs) {
+                    auto it = typeDefs->find(fieldType->name);
+                    if (it != typeDefs->end()) {
+                        currentType = it->second.get();
+                    } else {
+                        currentType = nullptr;
+                    }
+                } else {
+                    currentType = fieldType;
+                }
+            } else {
+                currentType = nullptr;
+            }
+        } else if (currentType->kind == ir::TypeKind::Array) {
+            // Array element index
+            offset += indices[i] * typeSizeBytes(currentType->elementType.get(), typeDefs);
+            currentType = currentType->elementType.get();
+        } else {
+            // Simple type or other - can't index further
+            break;
+        }
+    }
+    
+    // Handle simple types (non-struct, non-array source) where there's only one index
+    // The first index already computed the offset correctly for simple types
+    
+    return offset;
+}
 
 std::vector<LoweredInstruction> lowerCall(SelectorState& state,
     const ir::Instruction& irInst, const std::string& resultReg) {
@@ -77,10 +321,10 @@ std::vector<LoweredInstruction> lowerCall(SelectorState& state,
     // For llvm.va_start: add synthetic second argument (address of last named param)
     // Our C implementation expects: llvm_va_start(void *ap, void *last_arg)
     // The last_arg should point to the first parameter of the calling function
-    // In the calling function's stack frame: [bp+4] = first param
+      // In the calling function's stack frame: [bp+6] = first param (far call)
     if (isLLVAVaStart) {
-        // Add synthetic argument: address of last named parameter (bp+4)
-        args.push_back("bp_plus_4_sentinel");
+        // Add synthetic argument: address of last named parameter (bp+6)
+        args.push_back("bp_plus_6_sentinel");
         // We need a local copy of callArgKinds to modify (since irInst is const)
         // The synthetic arg is a far pointer (32-bit)
         // We'll handle this in the stack cleanup by checking for synthetic args
@@ -117,17 +361,15 @@ std::vector<LoweredInstruction> lowerCall(SelectorState& state,
             continue;
         }
         
-        // Handle synthetic bp+4 sentinel for llvm_va_start
-        if (argName == "bp_plus_4_sentinel") {
-            // Push the far pointer address of the last named parameter (bp+4)
-            // For near calls: bp+2 = return IP, bp+4 = first parameter offset
-            // For far calls: bp+2 = return IP, bp+4 = return CS, bp+6 = first param offset
-            // Our calls are near (within segment), so first param is at bp+4.
+        // Handle synthetic bp+6 sentinel for llvm_va_start
+        if (argName == "bp_plus_6_sentinel") {
+            // Push the far pointer address of the last named parameter (bp+6)
+            // Far calls: bp+2 = return IP, bp+4 = return CS, bp+6 = first param offset
             // High word = SS (segment selector for stack), low word = offset
             Instruction286 leaArg;
             leaArg.mnemonic = "lea";
             leaArg.operands.push_back("ax");
-            leaArg.operands.push_back("[bp+4]");
+            leaArg.operands.push_back("[bp+6]");
             lowered.instructions.push_back(leaArg);
             
             Instruction286 pushHigh;
@@ -150,36 +392,98 @@ std::vector<LoweredInstruction> lowerCall(SelectorState& state,
         // Check if argument is a global variable (starts with '.' or '@')
         bool isGlobal = (!argName.empty() && (argName[0] == '.' || argName[0] == '@'));
 
-        // Check if argument is a ptrtoint constant expression: ptrtoint(ptr@global to i32)
-        bool isPtrToIntExpr = (!argName.empty() && argName.substr(0, 8) == "ptrtoint");
-        std::string ptrToIntGlobalName;
-        if (isPtrToIntExpr) {
-            // Extract global name from "ptrtoint(ptr@name to i32)" or "ptrtoint(ptr@nametoi32)"
+        // Check if argument is a getelementptr constant expression
+        bool isGEPExpr = (!argName.empty() && argName.substr(0, 13) == "getelementptr");
+        std::string gepGlobalName;
+        int64_t gepOffset = 0;
+        if (isGEPExpr) {
+            fprintf(stderr, "DEBUG isGEPExpr: argName='%s'\n", argName.c_str());
+            // Parse: getelementptr(TYPE, ptr @name, i32 N, i32 M, ...)
             auto atPos = argName.find('@');
             if (atPos != std::string::npos) {
-                // Look for 'to' keyword after the global name
-                auto toPos = argName.find("to", atPos + 1);
-                if (toPos != std::string::npos) {
-                    ptrToIntGlobalName = argName.substr(atPos + 1, toPos - atPos - 1);
-                } else {
-                    // Fallback: take everything after @ until ')'
-                    auto endPos = argName.find(')', atPos + 1);
-                    ptrToIntGlobalName = argName.substr(atPos + 1, endPos != std::string::npos ? endPos - atPos - 1 : std::string::npos);
+                auto commaPos = argName.find(',', atPos);
+                if (commaPos != std::string::npos) {
+                    gepGlobalName = argName.substr(atPos + 1, commaPos - atPos - 1);
                 }
-                isGlobal = true; // Treat as global for codegen purposes
             }
+            // Compute byte offset using struct type information
+            gepOffset = computeGEPByteOffset(argName, state.typeDefinitions);
+            isGlobal = true;
+        }
+
+        // Check if argument is a ptrtoint constant expression: ptrtoint(ptr@global to i32)
+        // May also contain nested getelementptr: ptrtoint(ptr getelementptr(...@global...) to i32)
+        bool isPtrToIntExpr = (!argName.empty() && argName.substr(0, 8) == "ptrtoint");
+        std::string ptrToIntGlobalName;
+        int64_t ptrToIntGepOffset = 0;
+        bool ptrToIntHasGep = false;
+        if (isPtrToIntExpr) {
+            // Check for nested getelementptr inside ptrtoint
+            auto gepPos = argName.find("getelementptr");
+            if (gepPos != std::string::npos) {
+                // ptrtoint wrapping GEP: extract global name and compute offset
+                auto atPos = argName.find('@', gepPos);
+                if (atPos != std::string::npos) {
+                    auto commaPos = argName.find(',', atPos);
+                    if (commaPos != std::string::npos) {
+                        ptrToIntGlobalName = argName.substr(atPos + 1, commaPos - atPos - 1);
+                    }
+                    // Extract the GEP substring by finding matching parens
+                    // GEP starts at gepPos, find its opening '(' and matching ')'
+                    size_t parenStart = argName.find('(', gepPos);
+                    if (parenStart != std::string::npos) {
+                        size_t parenCount = 0;
+                        size_t end = parenStart;
+                        for (size_t i = parenStart; i < argName.size(); i++) {
+                            if (argName[i] == '(') parenCount++;
+                            else if (argName[i] == ')') {
+                                parenCount--;
+                                if (parenCount == 0) {
+                                    end = i + 1;
+                                    break;
+                                }
+                            }
+                        }
+                        std::string gepSubstr = argName.substr(gepPos, end - gepPos);
+                        ptrToIntGepOffset = computeGEPByteOffset(gepSubstr, state.typeDefinitions);
+                    }
+                    ptrToIntHasGep = true;
+                }
+            } else {
+                // Simple ptrtoint: ptrtoint(ptr@name to i32)
+                auto atPos = argName.find('@');
+                if (atPos != std::string::npos) {
+                    auto toPos = argName.find("to", atPos + 1);
+                    if (toPos != std::string::npos) {
+                        ptrToIntGlobalName = argName.substr(atPos + 1, toPos - atPos - 1);
+                    } else {
+                        auto endPos = argName.find(')', atPos + 1);
+                        ptrToIntGlobalName = argName.substr(atPos + 1, endPos != std::string::npos ? endPos - atPos - 1 : std::string::npos);
+                    }
+                }
+            }
+            isGlobal = true;
         }
 
         // Convert global variable name to NASM format (remove leading dot or @)
         std::string nasmName = argName;
-        if (isGlobal && nasmName.size() > 1 && !isPtrToIntExpr) {
+        if (isGEPExpr && !gepGlobalName.empty()) {
+            // GEP expression: use the extracted global name with mangling
+            nasmName = gepGlobalName;
+            if (nasmName.size() > 1 && nasmName[0] == '.') {
+                nasmName[0] = '_';
+            }
+        } else if (isGlobal && nasmName.size() > 1 && !isPtrToIntExpr) {
             // Regular global: convert leading . or @ to _ for NASM compatibility
             if (nasmName[0] == '.' || nasmName[0] == '@') {
                 nasmName[0] = '_';
             }
         } else if (isGlobal && isPtrToIntExpr && !ptrToIntGlobalName.empty()) {
-            // ptrtoint expression: use the extracted global name directly
+            // ptrtoint expression: use the extracted global name with mangling
             nasmName = ptrToIntGlobalName;
+            if (nasmName.size() > 1 && nasmName[0] == '.') {
+                nasmName[0] = '_';
+            }
         }
         // Mangle NASM reserved words
         if (!nasmName.empty()) {
@@ -229,6 +533,33 @@ std::vector<LoweredInstruction> lowerCall(SelectorState& state,
             if (isGlobal) {
                 if (isPtrArg) {
                     // Pointer argument - push the far pointer ADDRESS (seg:offset)
+                    if (isGEPExpr) {
+                        // GEP: compute address via lea, then push
+                        Instruction286 leaAddr;
+                        leaAddr.mnemonic = "lea";
+                        leaAddr.operands.push_back("ax");
+                        std::string leaOperand = "[" + nasmName;
+                        if (gepOffset != 0) {
+                            if (gepOffset > 0) {
+                                leaOperand += "+" + std::to_string(gepOffset);
+                            } else {
+                                leaOperand += std::to_string(gepOffset);
+                            }
+                        }
+                        leaOperand += "]";
+                        leaAddr.operands.push_back(leaOperand);
+                        lowered.instructions.push_back(leaAddr);
+
+                        Instruction286 pushHigh;
+                        pushHigh.mnemonic = "push";
+                        pushHigh.operands.push_back("ds");
+                        lowered.instructions.push_back(pushHigh);
+
+                        Instruction286 pushLow;
+                        pushLow.mnemonic = "push";
+                        pushLow.operands.push_back("ax");
+                        lowered.instructions.push_back(pushLow);
+                    } else {
                     // Push selector (high word) first, then offset (low word)
                     // Stack layout: [offset][selector] (little-endian)
                     Instruction286 pushHigh;
@@ -240,13 +571,29 @@ std::vector<LoweredInstruction> lowerCall(SelectorState& state,
                     pushLow.mnemonic = "push";
                     pushLow.operands.push_back(nasmName);
                     lowered.instructions.push_back(pushLow);
-                } else if (isPtrToIntExpr) {
-                    // ptrtoint constant expression - push address of global
+                    }
+               } else if (isPtrToIntExpr || isGEPExpr) {
+                    // ptrtoint or GEP constant expression - push address of global
                     // High word = 0, low word = address (offset)
                     Instruction286 leaLow;
                     leaLow.mnemonic = "lea";
                     leaLow.operands.push_back("ax");
-                    leaLow.operands.push_back("[" + nasmName + "]");
+                    std::string leaOperand = "[" + nasmName;
+                    int64_t effectiveOffset = 0;
+                    if (isGEPExpr) {
+                        effectiveOffset = gepOffset;
+                    } else if (ptrToIntHasGep) {
+                        effectiveOffset = ptrToIntGepOffset;
+                    }
+                    if (effectiveOffset != 0) {
+                        if (effectiveOffset > 0) {
+                            leaOperand += "+" + std::to_string(effectiveOffset);
+                        } else {
+                            leaOperand += std::to_string(effectiveOffset);
+                        }
+                    }
+                    leaOperand += "]";
+                    leaLow.operands.push_back(leaOperand);
                     lowered.instructions.push_back(leaLow);
 
                     Instruction286 pushHigh;
@@ -553,12 +900,12 @@ std::vector<LoweredInstruction> lowerCall(SelectorState& state,
     if (isLLVAVaStart) {
         // We pushed 2 args (ap and last_arg), each 32-bit (4 bytes each = 8 bytes total)
         // Stack layout after pushes: [ap_offset][ap_selector][last_arg_offset][last_arg_selector]
-        // After call near pushes return IP: [return_IP][ap_offset][ap_selector][last_arg_offset][last_arg_selector]
-        // We can access these from [bp+2], [bp+4], [bp+6], [bp+8] respectively
+        // After call far pushes return CS:IP: [return_IP][return_CS][ap_offset][ap_selector][last_arg_offset][last_arg_selector]
+        // We can access these from [bp+2], [bp+4], [bp+6], [bp+8], [bp+10], [bp+12] respectively
         // Actually, since we haven't called anything, we can pop them directly
         
         // Pop last_arg (the arg we just pushed last, so it's on top of stack)
-        // last_arg was pushed as: push SS (selector), push ax (offset where ax=bp+4)
+        // last_arg was pushed as: push SS (selector), push ax (offset where ax=bp+6)
         // So stack top is: [last_arg_offset][last_arg_selector=SS]
         
         // Pop last_arg_selector into DX
@@ -635,19 +982,19 @@ std::vector<LoweredInstruction> lowerCall(SelectorState& state,
                 
                 Instruction286 callIndirect;
                 callIndirect.mnemonic = "call";
-                callIndirect.operands.push_back("bx");
+                callIndirect.operands.push_back("far [bx]");
                 lowered.instructions.push_back(callIndirect);
             } else {
                 // Value is in a register - call through that register
                 Instruction286 callIndirect;
                 callIndirect.mnemonic = "call";
-                callIndirect.operands.push_back(calleeReg);
+                callIndirect.operands.push_back("far " + calleeReg);
                 lowered.instructions.push_back(callIndirect);
             }
-        } else {
+       } else {
             Instruction286 callInst;
             callInst.mnemonic = "call";
-            callInst.operands.push_back(callee);
+            callInst.operands.push_back("far " + safeNasmName(callee));
             lowered.instructions.push_back(callInst);
         }
     }

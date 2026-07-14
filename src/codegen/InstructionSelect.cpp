@@ -31,6 +31,10 @@ void InstructionSelector::setAliasMap(const std::map<std::string, std::string>& 
     impl->aliasMap = aliases;
 }
 
+void InstructionSelector::setTypeDefinitions(const std::map<std::string, std::unique_ptr<ir::Type>>* typeDefs) {
+    impl->typeDefinitions = typeDefs;
+}
+
 int InstructionSelector::getFrameSize() const {
     return impl->frame.getFrameSize();
 }

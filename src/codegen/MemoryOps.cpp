@@ -446,6 +446,8 @@ std::vector<LoweredInstruction> lowerLoad(SelectorState& state,
                 loadInst.mnemonic = "mov";
                 loadInst.operands.push_back(destReg);
                 if (irInst.resultType && irInst.resultType->bitWidth == 8) {
+                    // 8-bit load: use AL destination
+                    loadInst.operands[0] = "al"; // Change dest from ax to al
                     loadInst.operands.push_back("byte [" + std::string("bx") + "]");
                 } else {
                     loadInst.operands.push_back("[" + std::string("bx") + "]");
@@ -659,12 +661,27 @@ std::vector<LoweredInstruction> lowerLoad(SelectorState& state,
                         
                        } else {
                         // 16-bit load
-                        Instruction286 loadInst;
-                        loadInst.mnemonic = "mov";
-                        loadInst.operands.push_back(destReg);
-                        std::string derefBase16 = ptrIsSS ? "[ss:bx]" : "[bx]";
-                        loadInst.operands.push_back(derefBase16);
-                        lowered.instructions.push_back(loadInst);
+                        // If destReg is a memory location, load to ax first then store
+                        if (destReg.find("bp") != std::string::npos) {
+                            Instruction286 loadInst;
+                            loadInst.mnemonic = "mov";
+                            loadInst.operands.push_back("ax");
+                            std::string derefBase16 = ptrIsSS ? "[ss:bx]" : "[bx]";
+                            loadInst.operands.push_back(derefBase16);
+                            lowered.instructions.push_back(loadInst);
+                            Instruction286 storeResult;
+                            storeResult.mnemonic = "mov";
+                            storeResult.operands.push_back("[" + destReg + "]");
+                            storeResult.operands.push_back("ax");
+                            lowered.instructions.push_back(storeResult);
+                        } else {
+                            Instruction286 loadInst;
+                            loadInst.mnemonic = "mov";
+                            loadInst.operands.push_back(destReg);
+                            std::string derefBase16 = ptrIsSS ? "[ss:bx]" : "[bx]";
+                            loadInst.operands.push_back(derefBase16);
+                            lowered.instructions.push_back(loadInst);
+                        }
                     }
                 } else {
                     // Alloca result: address is SS-derived (stack location)
@@ -719,15 +736,33 @@ std::vector<LoweredInstruction> lowerLoad(SelectorState& state,
                         
                     } else {
                         // 16-bit load
-                        Instruction286 loadInst;
-                        loadInst.mnemonic = "mov";
-                        loadInst.operands.push_back(destReg);
-                        if (actualLoadAddr.find("bp") != std::string::npos) {
-                            loadInst.operands.push_back("[ss:" + actualLoadAddr + "]");
+                        // If destReg is a memory location, load to ax first then store
+                        if (destReg.find("bp") != std::string::npos) {
+                            Instruction286 loadInst;
+                            loadInst.mnemonic = "mov";
+                            loadInst.operands.push_back("ax");
+                            if (actualLoadAddr.find("bp") != std::string::npos) {
+                                loadInst.operands.push_back("[ss:" + actualLoadAddr + "]");
+                            } else {
+                                loadInst.operands.push_back("[ss:" + actualLoadAddr + "]");
+                            }
+                            lowered.instructions.push_back(loadInst);
+                            Instruction286 storeResult;
+                            storeResult.mnemonic = "mov";
+                            storeResult.operands.push_back("[" + destReg + "]");
+                            storeResult.operands.push_back("ax");
+                            lowered.instructions.push_back(storeResult);
                         } else {
-                            loadInst.operands.push_back("[ss:" + actualLoadAddr + "]");
+                            Instruction286 loadInst;
+                            loadInst.mnemonic = "mov";
+                            loadInst.operands.push_back(destReg);
+                            if (actualLoadAddr.find("bp") != std::string::npos) {
+                                loadInst.operands.push_back("[ss:" + actualLoadAddr + "]");
+                            } else {
+                                loadInst.operands.push_back("[ss:" + actualLoadAddr + "]");
+                            }
+                            lowered.instructions.push_back(loadInst);
                         }
-                        lowered.instructions.push_back(loadInst);
                     }
                 }
             }
@@ -802,13 +837,26 @@ std::vector<LoweredInstruction> lowerLoad(SelectorState& state,
                 
                 Instruction286 loadInst;
                 loadInst.mnemonic = "mov";
-                loadInst.operands.push_back(destReg);
                 if (is8) {
+                    // 8-bit load: use AL destination
+                    loadInst.operands.push_back("al");
                     loadInst.operands.push_back("byte [" + segPrefix + "bx]");
-                } else {
+                    lowered.instructions.push_back(loadInst);
+                } else if (destReg.find("bp") != std::string::npos) {
+                    // destReg is memory - load to ax first, then store
+                    loadInst.operands.push_back("ax");
                     loadInst.operands.push_back("[" + segPrefix + "bx]");
+                    lowered.instructions.push_back(loadInst);
+                    Instruction286 storeResult;
+                    storeResult.mnemonic = "mov";
+                    storeResult.operands.push_back("[" + destReg + "]");
+                    storeResult.operands.push_back("ax");
+                    lowered.instructions.push_back(storeResult);
+                } else {
+                    loadInst.operands.push_back(destReg);
+                    loadInst.operands.push_back("[" + segPrefix + "bx]");
+                    lowered.instructions.push_back(loadInst);
                 }
-                lowered.instructions.push_back(loadInst);
             }
         }
     }

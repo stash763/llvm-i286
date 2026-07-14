@@ -23,20 +23,44 @@ std::vector<LoweredInstruction> lowerTrunc(SelectorState& state,
         std::string destReg = resultReg.empty() ? "ax" : resultReg;
 
         bool srcIsMem = srcReg.find("bp") != std::string::npos;
+        bool destIsMem = destReg.find("bp") != std::string::npos;
 
         // Load source into destReg if it's a memory location
         if (srcIsMem) {
-            Instruction286 loadInst;
-            loadInst.mnemonic = "mov";
-            loadInst.operands.push_back(destReg);
-            loadInst.operands.push_back("[" + srcReg + "]");
-            lowered.instructions.push_back(loadInst);
+            if (destIsMem) {
+                // mem-to-mem: load to ax first, then store to dest
+                Instruction286 loadInst;
+                loadInst.mnemonic = "mov";
+                loadInst.operands.push_back("ax");
+                loadInst.operands.push_back("[" + srcReg + "]");
+                lowered.instructions.push_back(loadInst);
+                Instruction286 storeInst;
+                storeInst.mnemonic = "mov";
+                storeInst.operands.push_back("[" + destReg + "]");
+                storeInst.operands.push_back("ax");
+                lowered.instructions.push_back(storeInst);
+            } else {
+                Instruction286 loadInst;
+                loadInst.mnemonic = "mov";
+                loadInst.operands.push_back(destReg);
+                loadInst.operands.push_back("[" + srcReg + "]");
+                lowered.instructions.push_back(loadInst);
+            }
         } else if (destReg != srcReg) {
-            Instruction286 movInst;
-            movInst.mnemonic = "mov";
-            movInst.operands.push_back(destReg);
-            movInst.operands.push_back(srcReg);
-            lowered.instructions.push_back(movInst);
+            if (destIsMem) {
+                // Store to memory with brackets
+                Instruction286 movInst;
+                movInst.mnemonic = "mov";
+                movInst.operands.push_back("[" + destReg + "]");
+                movInst.operands.push_back(srcReg);
+                lowered.instructions.push_back(movInst);
+            } else {
+                Instruction286 movInst;
+                movInst.mnemonic = "mov";
+                movInst.operands.push_back(destReg);
+                movInst.operands.push_back(srcReg);
+                lowered.instructions.push_back(movInst);
+            }
         }
 
         if (!irInst.resultName.empty()) {
@@ -61,20 +85,42 @@ std::vector<LoweredInstruction> lowerZExt(SelectorState& state,
         std::string destReg = resultReg.empty() ? "ax" : resultReg;
 
         bool srcIsMem = srcReg.find("bp") != std::string::npos;
+        bool destIsMem = destReg.find("bp") != std::string::npos;
 
         // Load source into destReg if it's a memory location
         if (srcIsMem && destReg != srcReg) {
-            Instruction286 loadInst;
-            loadInst.mnemonic = "mov";
-            loadInst.operands.push_back(destReg);
-            loadInst.operands.push_back("[" + srcReg + "]");
-            lowered.instructions.push_back(loadInst);
+            if (destIsMem) {
+                Instruction286 loadInst;
+                loadInst.mnemonic = "mov";
+                loadInst.operands.push_back("ax");
+                loadInst.operands.push_back("[" + srcReg + "]");
+                lowered.instructions.push_back(loadInst);
+                Instruction286 storeInst;
+                storeInst.mnemonic = "mov";
+                storeInst.operands.push_back("[" + destReg + "]");
+                storeInst.operands.push_back("ax");
+                lowered.instructions.push_back(storeInst);
+            } else {
+                Instruction286 loadInst;
+                loadInst.mnemonic = "mov";
+                loadInst.operands.push_back(destReg);
+                loadInst.operands.push_back("[" + srcReg + "]");
+                lowered.instructions.push_back(loadInst);
+            }
         } else if (destReg != srcReg) {
-            Instruction286 movInst;
-            movInst.mnemonic = "mov";
-            movInst.operands.push_back(destReg);
-            movInst.operands.push_back(srcReg);
-            lowered.instructions.push_back(movInst);
+            if (destIsMem) {
+                Instruction286 movInst;
+                movInst.mnemonic = "mov";
+                movInst.operands.push_back("[" + destReg + "]");
+                movInst.operands.push_back(srcReg);
+                lowered.instructions.push_back(movInst);
+            } else {
+                Instruction286 movInst;
+                movInst.mnemonic = "mov";
+                movInst.operands.push_back(destReg);
+                movInst.operands.push_back(srcReg);
+                lowered.instructions.push_back(movInst);
+            }
         }
 
         if (!irInst.resultName.empty()) {
@@ -129,20 +175,42 @@ std::vector<LoweredInstruction> lowerSExt(SelectorState& state,
         std::string destReg = resultReg.empty() ? "ax" : resultReg;
 
         bool srcIsMem = srcReg.find("bp") != std::string::npos;
+        bool destIsMem = destReg.find("bp") != std::string::npos;
 
         // Load source into destReg if it's a memory location
         if (srcIsMem && destReg != srcReg) {
-            Instruction286 loadInst;
-            loadInst.mnemonic = "mov";
-            loadInst.operands.push_back(destReg);
-            loadInst.operands.push_back("[" + srcReg + "]");
-            lowered.instructions.push_back(loadInst);
+            if (destIsMem) {
+                Instruction286 loadInst;
+                loadInst.mnemonic = "mov";
+                loadInst.operands.push_back("ax");
+                loadInst.operands.push_back("[" + srcReg + "]");
+                lowered.instructions.push_back(loadInst);
+                Instruction286 storeInst;
+                storeInst.mnemonic = "mov";
+                storeInst.operands.push_back("[" + destReg + "]");
+                storeInst.operands.push_back("ax");
+                lowered.instructions.push_back(storeInst);
+            } else {
+                Instruction286 loadInst;
+                loadInst.mnemonic = "mov";
+                loadInst.operands.push_back(destReg);
+                loadInst.operands.push_back("[" + srcReg + "]");
+                lowered.instructions.push_back(loadInst);
+            }
         } else if (destReg != srcReg) {
-            Instruction286 movInst;
-            movInst.mnemonic = "mov";
-            movInst.operands.push_back(destReg);
-            movInst.operands.push_back(srcReg);
-            lowered.instructions.push_back(movInst);
+            if (destIsMem) {
+                Instruction286 movInst;
+                movInst.mnemonic = "mov";
+                movInst.operands.push_back("[" + destReg + "]");
+                movInst.operands.push_back(srcReg);
+                lowered.instructions.push_back(movInst);
+            } else {
+                Instruction286 movInst;
+                movInst.mnemonic = "mov";
+                movInst.operands.push_back(destReg);
+                movInst.operands.push_back(srcReg);
+                lowered.instructions.push_back(movInst);
+            }
         }
 
         // Store result to stack slot if it has a name

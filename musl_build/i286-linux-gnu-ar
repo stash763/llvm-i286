@@ -1,0 +1,44 @@
+#!/bin/bash
+# ar wrapper for llvm-i286 toolchain - maps ar commands to wlib
+# Supports: rc (create+add), r (add), t (list), d (delete), x (extract)
+
+WLIB="${WLIB:-$HOME/ow/open-watcom-v2/rel/binl/wlib}"
+
+# Parse ar-style arguments
+case "$1" in
+    rc|rcs|rcD)
+        shift
+        ARCHIVE="$1"
+        shift
+        # wlib: -c creates new archive, then add files
+        "$WLIB" -c "$ARCHIVE" "$@"
+        ;;
+    r)
+        shift
+        ARCHIVE="$1"
+        shift
+        "$WLIB" "$ARCHIVE" "$@"
+        ;;
+    t)
+        shift
+        ARCHIVE="$1"
+        "$WLIB" -l "$ARCHIVE"
+        ;;
+    d)
+        shift
+        ARCHIVE="$1"
+        shift
+        for f in "$@"; do
+            "$WLIB" -d "$ARCHIVE" "$f"
+        done
+        ;;
+    x)
+        shift
+        ARCHIVE="$1"
+        "$WLIB" -x "$ARCHIVE"
+        ;;
+    *)
+        # Fallback: pass through to wlib
+        "$WLIB" "$@"
+        ;;
+esac

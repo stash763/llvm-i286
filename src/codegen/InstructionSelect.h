@@ -39,6 +39,9 @@ public:
     // Set alias map for weak_alias resolution
     void setAliasMap(const std::map<std::string, std::string>& aliases);
 
+    // Set type definitions for GEP offset computation
+    void setTypeDefinitions(const std::map<std::string, std::unique_ptr<ir::Type>>* typeDefs);
+
     // Get the computed frame size (for prologue emission)
     int getFrameSize() const;
 

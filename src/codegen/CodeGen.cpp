@@ -52,6 +52,9 @@ std::string CodeGen::generate(const ir::Module& module) {
     // Pass alias map to selector for weak_alias resolution
     selector.setAliasMap(module.aliases);
     
+    // Pass type definitions for GEP offset computation
+    selector.setTypeDefinitions(&module.typeDefinitions);
+    
     std::string allFunctions;
     
     // Determine entry function name: only "main" gets a start entry point.
@@ -100,6 +103,11 @@ std::string CodeGen::generate(const ir::Module& module) {
         if (gv->linkage == "external") {
             externGlobals.push_back(gv->name);
         }
+    }
+
+    // Also add alias names as extern globals (they may be defined in other modules)
+    for (const auto& alias : module.aliases) {
+        externGlobals.push_back(alias.first);
     }
     
     // Note: Runtime library functions are added below after globals processing
@@ -228,12 +236,15 @@ std::string CodeGen::generate(const ir::Module& module) {
                 // Other initialized constants (integers, etc.)
                 // Check for complex LLVM IR initializers we can't handle directly
                 // (structs, arrays, concatenated strings, zeroinitializer, etc.)
-                std::string initValue = gv->initializer->text;
+               std::string initValue = gv->initializer->text;
                 bool isComplex = initValue.find("<{") != std::string::npos ||
+                                 initValue.find("{") != std::string::npos ||
                                  initValue.find("zeroinitializer") != std::string::npos ||
                                  initValue.find("undef") != std::string::npos ||
-                                 initValue.find("[") != std::string::npos;
-                
+                                 initValue.find("[") != std::string::npos ||
+                                 initValue.find("0xK") != std::string::npos ||
+                                 (initValue.find("0x") == 0 && initValue.find("'") != std::string::npos);
+
                 int byteSize = 2; // Default to 2 bytes
                 if (gv->type) {
                     if (gv->type->isInteger()) {
@@ -243,7 +254,7 @@ std::string CodeGen::generate(const ir::Module& module) {
                         byteSize = 4;
                     }
                 }
-                
+
                 if (isComplex) {
                     // Complex initializer: emit as zero-initialized BSS data
                     bssSegment += dataLabel + ":\n";
@@ -293,6 +304,9 @@ std::string CodeGen::generate(const ir::Module& module) {
                         dataSegment += "\tdw " + nasmBase + "\n\n";
                     }
                 } else {
+                    // Convert boolean constants to numeric values
+                    if (initValue == "false") initValue = "0";
+                    else if (initValue == "true") initValue = "1";
                     // Strip @ prefix from global references for NASM compatibility
                     if (!initValue.empty() && initValue[0] == '@') {
                         initValue = initValue.substr(1);
@@ -333,9 +347,12 @@ std::string CodeGen::generate(const ir::Module& module) {
             } else {
                 std::string initValue = gv->initializer->text;
                 bool isComplex = initValue.find("<{") != std::string::npos ||
+                                 initValue.find("{") != std::string::npos ||
                                  initValue.find("zeroinitializer") != std::string::npos ||
                                  initValue.find("undef") != std::string::npos ||
-                                 initValue.find("[") != std::string::npos;
+                                 initValue.find("[") != std::string::npos ||
+                                 initValue.find("0xK") != std::string::npos ||
+                                 (initValue.find("0x") == 0 && initValue.find("'") != std::string::npos);
                 
                 int byteSize = 2;
                 if (gv->type) {
@@ -352,6 +369,9 @@ std::string CodeGen::generate(const ir::Module& module) {
                     bssSegment += dataLabel + ":\n";
                     bssSegment += "\tresb " + std::to_string(byteSize) + "\n\n";
                 } else {
+                    // Convert boolean constants to numeric values
+                    if (initValue == "false") initValue = "0";
+                    else if (initValue == "true") initValue = "1";
                     // Strip @ prefix from global references for NASM compatibility
                     if (!initValue.empty() && initValue[0] == '@') {
                         initValue = initValue.substr(1);

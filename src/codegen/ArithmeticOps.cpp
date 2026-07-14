@@ -448,28 +448,44 @@ std::vector<LoweredInstruction> lowerSub(SelectorState& state,
                 op2 = tmpReg;
             }
 
-            // Move op1 to resultReg if it's not already there
-            if (!op1IsConst && resultReg != op1) {
+           // Check if resultReg is a memory location
+            bool destIsMem = resultReg.find("bp") != std::string::npos;
+            std::string destReg = destIsMem ? "ax" : resultReg;
+
+            // Move op1 to destReg if it's not already there
+            if (!op1IsConst && destReg != op1) {
                 Instruction286 movInst;
                 movInst.mnemonic = "mov";
-                movInst.operands.push_back(resultReg);
+                movInst.operands.push_back(destReg);
                 movInst.operands.push_back(op1);
                 lowered.instructions.push_back(movInst);
             } else if (op1IsConst) {
-                // Load constant into resultReg
+                // Load constant into destReg
                 Instruction286 movConst;
                 movConst.mnemonic = "mov";
-                movConst.operands.push_back(resultReg);
+                movConst.operands.push_back(destReg);
                 movConst.operands.push_back(op1Name);
                 lowered.instructions.push_back(movConst);
             }
 
-            subInst.operands.push_back(resultReg);
+            subInst.operands.push_back(destReg);
             subInst.operands.push_back(op2);
 
-            // Update register mapping - sub writes to resultReg
-            if (!irInst.resultName.empty()) {
+            lowered.instructions.push_back(subInst);
+
+            // If destReg was memory, store result back
+            if (destIsMem && !irInst.resultName.empty()) {
+                Instruction286 storeResult;
+                storeResult.mnemonic = "mov";
+                storeResult.operands.push_back("[" + resultReg + "]");
+                storeResult.operands.push_back("ax");
+                lowered.instructions.push_back(storeResult);
                 state.frame.setPhysReg(irInst.resultName, resultReg);
+            } else {
+                // Update register mapping - sub writes to destReg
+                if (!irInst.resultName.empty()) {
+                    state.frame.setPhysReg(irInst.resultName, destReg);
+                }
             }
         } else {
             subInst.operands.push_back("ax");
@@ -616,7 +632,11 @@ std::vector<LoweredInstruction> lowerMul(SelectorState& state,
                 Instruction286 movInst;
                 movInst.mnemonic = "mov";
                 movInst.operands.push_back("ax");
-                movInst.operands.push_back(op1);
+                if (op1.find("bp") != std::string::npos) {
+                    movInst.operands.push_back("[" + op1 + "]");
+                } else {
+                    movInst.operands.push_back(op1);
+                }
                 lowered.instructions.push_back(movInst);
             }
 
@@ -634,17 +654,30 @@ std::vector<LoweredInstruction> lowerMul(SelectorState& state,
         lowered.instructions.push_back(imulInst);
 
         // Result is in AX (low word) and DX (high word)
-        if (resultReg != "ax") {
-            Instruction286 movInst;
-            movInst.mnemonic = "mov";
-            movInst.operands.push_back(resultReg);
-            movInst.operands.push_back("ax");
-            lowered.instructions.push_back(movInst);
+        bool destIsMem = resultReg.find("bp") != std::string::npos;
+        if (resultReg != "ax" || destIsMem) {
+            if (destIsMem) {
+                Instruction286 movInst;
+                movInst.mnemonic = "mov";
+                movInst.operands.push_back("[" + resultReg + "]");
+                movInst.operands.push_back("ax");
+                lowered.instructions.push_back(movInst);
+            } else {
+                Instruction286 movInst;
+                movInst.mnemonic = "mov";
+                movInst.operands.push_back(resultReg);
+                movInst.operands.push_back("ax");
+                lowered.instructions.push_back(movInst);
+            }
         }
 
         // Update register mapping - mul writes to AX (low word)
         if (!irInst.resultName.empty()) {
-            state.frame.setPhysReg(irInst.resultName, "ax");
+            if (destIsMem) {
+                state.frame.setPhysReg(irInst.resultName, resultReg);
+            } else {
+                state.frame.setPhysReg(irInst.resultName, "ax");
+            }
         }
     }
 

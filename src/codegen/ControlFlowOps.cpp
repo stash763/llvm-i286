@@ -115,9 +115,9 @@ std::vector<LoweredInstruction> lowerRetTerm(SelectorState& state,
     popBp.operands.push_back("bp");
     lowered.instructions.push_back(popBp);
 
-    // Emit ret
+    // Emit retf (far return)
     Instruction286 retInst;
-    retInst.mnemonic = "ret";
+    retInst.mnemonic = "retf";
     lowered.instructions.push_back(retInst);
 
     loweredVec.push_back(lowered);
@@ -331,6 +331,8 @@ std::vector<LoweredInstruction> lowerSelect(SelectorState& state,
         std::string val2Reg = state.frame.getPhysReg(irInst.operands[2].name);
 
         std::string destReg = resultReg.empty() ? "ax" : resultReg;
+        bool destIsMem = destReg.find("bp") != std::string::npos;
+        std::string workReg = destIsMem ? "ax" : destReg;
 
         // Test condition
         Instruction286 testCond;
@@ -349,11 +351,15 @@ std::vector<LoweredInstruction> lowerSelect(SelectorState& state,
         jmpTrue.operands.push_back(trueLabel);
         lowered.instructions.push_back(jmpTrue);
 
-        // False case: load val2
+        // False case: load val2 into workReg
         Instruction286 loadFalse;
         loadFalse.mnemonic = "mov";
-        loadFalse.operands.push_back(destReg);
-        loadFalse.operands.push_back(val2Reg);
+        loadFalse.operands.push_back(workReg);
+        if (val2Reg.find("bp") != std::string::npos) {
+            loadFalse.operands.push_back("[" + val2Reg + "]");
+        } else {
+            loadFalse.operands.push_back(val2Reg);
+        }
         lowered.instructions.push_back(loadFalse);
         Instruction286 jmpEnd;
         jmpEnd.mnemonic = "jmp";
@@ -367,10 +373,15 @@ std::vector<LoweredInstruction> lowerSelect(SelectorState& state,
         trueLabelInst.label = trueLabel;
         loweredVec.push_back(trueLabelInst);
 
+        // True case: load val1 into workReg
         Instruction286 loadTrue;
         loadTrue.mnemonic = "mov";
-        loadTrue.operands.push_back(destReg);
-        loadTrue.operands.push_back(val1Reg);
+        loadTrue.operands.push_back(workReg);
+        if (val1Reg.find("bp") != std::string::npos) {
+            loadTrue.operands.push_back("[" + val1Reg + "]");
+        } else {
+            loadTrue.operands.push_back(val1Reg);
+        }
         lowered.instructions.push_back(loadTrue);
 
         loweredVec.push_back(lowered);
@@ -379,6 +390,15 @@ std::vector<LoweredInstruction> lowerSelect(SelectorState& state,
         LoweredInstruction endLabelInst;
         endLabelInst.label = endLabel;
         loweredVec.push_back(endLabelInst);
+
+        // If destReg is memory, store workReg to it
+        if (destIsMem) {
+            Instruction286 storeResult;
+            storeResult.mnemonic = "mov";
+            storeResult.operands.push_back("[" + destReg + "]");
+            storeResult.operands.push_back(workReg);
+            lowered.instructions.push_back(storeResult);
+        }
 
         if (!irInst.resultName.empty()) {
             state.frame.setPhysReg(irInst.resultName, destReg);

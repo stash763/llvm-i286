@@ -166,7 +166,7 @@ done
 
 for f in "${INPUT_FILES[@]}"; do
     case "$f" in
-        *.c|*.C|*.cpp|*.cc|*.cxx|*.ll|*.s|*.S|*.o|*.obj|*.a|*.lib) ;;
+        *.c|*.C|*.cpp|*.cc|*.cxx|*.ll|*.s|*.S|*.o|*.obj|*.a|*.lib|*.lo) ;;
         *) die "unsupported file type: '$f'" ;;
     esac
 done
@@ -219,10 +219,36 @@ for INPUT in "${INPUT_FILES[@]}"; do
 
     vmsg "processing: $INPUT"
 
-    # --- Stage 0: Pass through existing object files ---
+    # --- Stage 0: Pass through existing object/library files ---
     case "$INPUT" in
-        *.o|*.obj)
+        *.o|*.obj|*.lo)
             OBJ_FILES+=("$INPUT")
+            continue
+            ;;
+        *.a|*.lib)
+            LINK_EXTRA_ARGS+=("library" "$INPUT")
+            continue
+            ;;
+    esac
+
+    # --- Stage 0b: Assembly files -> NASM directly (bypass clang/llvm pipeline) ---
+    case "$INPUT" in
+        *.s|*.S|*.asm)
+            ASM_FILE="$INPUT"
+            OBJ_FILE="$TEMP_DIR/${base}.o"
+
+            vmsg "nasm (direct): $ASM_FILE -> $OBJ_FILE"
+            if ! "$NASM_BIN" -f obj -o "$OBJ_FILE" "$ASM_FILE" 2>&1; then
+                die "nasm failed for '$INPUT'"
+            fi
+
+            if [ "$MODE" = "obj" ]; then
+                if [ ${#INPUT_FILES[@]} -eq 1 ]; then
+                    cp "$OBJ_FILE" "$OUTPUT_FILE"
+                fi
+            fi
+
+            OBJ_FILES+=("$OBJ_FILE")
             continue
             ;;
     esac
@@ -310,9 +336,20 @@ if [ "$MODE" = "exe" ] && [ ${#OBJ_FILES[@]} -gt 0 ]; then
         WLINK_ARGS+=("file" "$obj")
     done
 
-    # Add extra linker args
+    # Add extra linker args (translate -L and -l to wlink syntax)
     for arg in "${LINK_EXTRA_ARGS[@]}"; do
-        WLINK_ARGS+=("$arg")
+        case "$arg" in
+            -L*)
+                WLINK_ARGS+=("path" "${arg#-L}")
+                ;;
+            -l*)
+                libname="${arg#-l}"
+                WLINK_ARGS+=("library" "$libname")
+                ;;
+            *)
+                WLINK_ARGS+=("$arg")
+                ;;
+        esac
     done
 
     if ! "$WLINK_BIN" "${WLINK_ARGS[@]}" 2>&1; then

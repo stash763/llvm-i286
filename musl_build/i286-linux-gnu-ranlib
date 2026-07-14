@@ -1,0 +1,3 @@
+#!/bin/bash
+# ranlib wrapper for llvm-i286 - wlib handles indexing automatically, so this is a no-op
+exit 0

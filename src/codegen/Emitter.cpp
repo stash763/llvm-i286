@@ -195,18 +195,20 @@ std::string Emitter::emitModule(const std::string& moduleName,
     }
     output += "\n";
     
-    // Stack segment
-    output += "segment\tSTACK stack\n";
-    output += "\tresw 2048\t\t\t; 4096 bytes stack\n\n";
-    
+    // Stack segment (only for executables with entry point, not library objects)
+    if (!entryFuncName.empty()) {
+        output += "segment\tSTACK stack\n";
+        output += "\tresw 2048\t\t\t; 4096 bytes stack\n\n";
+    }
+
     // Code segment
     output += "segment _TEXT CLASS=CODE\n\n";
-    
+
     if (!entryFuncName.empty()) {
         // Program with entry function: ..start: calls entry function, then exits
         output += "..start:\n";
         output += "                ;  Program entry point - call " + entryFuncName + "\n";
-        output += "                call\t" + entryFuncName + "\n";
+        output += "                call\tfar " + entryFuncName + "\n";
         output += "\n";
         
         // Exit code MUST be before entry function so return address points here

@@ -90,13 +90,13 @@ void StackFrame::setMaxTempSpace(int bytes) {
 
 void StackFrame::computeLayout() {
     // Layout:
-    // [bp+4, bp+6, ...]  parameters (positive offsets)
+    // [bp+6, bp+8, ...]   parameters (positive offsets, far call: bp+4=CS, bp+2=IP)
     // [bp-2, bp-4, bp-6]  saved regs (bx, si, di)
     // [bp-8, ...]         locals (allocas + spills)
     // [bp-8-L, ...]       temp area (reset per block)
 
     // Step 1: Compute param offsets (positive)
-    int paramOffset = 4;  // start at [bp+4]
+    int paramOffset = 6;  // start at [bp+6] (far call pushes CS:IP = 4 bytes)
     for (auto& slot : slots) {
         if (slot.kind == SlotKind::Param) {
             if (slot.paramReg.empty()) {
@@ -107,7 +107,7 @@ void StackFrame::computeLayout() {
             // Register-allocated params don't get stack offsets
             // Params are NOT marked as SS-derived because the pointer VALUE
             // stored in the param slot could point to DS or SS memory.
-            // The slot itself is on SS, but we access it via [bp+4] which
+            // The slot itself is on SS, but we access it via [bp+6] which
             // defaults to SS via bp. We don't propagate SS-derived to the
             // loaded value.
         }

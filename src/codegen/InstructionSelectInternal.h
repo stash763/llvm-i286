@@ -46,6 +46,9 @@ struct SelectorState {
     // Current function being processed
     const ir::Function* currentFunc = nullptr;
 
+    // Type definitions from the module (for GEP offset computation)
+    const std::map<std::string, std::unique_ptr<ir::Type>>* typeDefinitions = nullptr;
+
     // Helper to get next label
     std::string nextLabel(const std::string& prefix = ".L") {
         return prefix + std::to_string(labelCounter++);
