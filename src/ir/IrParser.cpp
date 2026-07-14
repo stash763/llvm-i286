@@ -32,10 +32,33 @@ std::unique_ptr<Module> IrParser::parseFile(const std::string& filename) {
 
 std::unique_ptr<Module> IrParser::parseString(const std::string& ir) {
     std::cout << "Parsing LLVM IR (" << ir.size() << " bytes)" << std::endl;
-    
+
+    // Strip metadata attachments (!llvm.loop, !dbg, etc.) that confuse the parser
+    std::string cleaned;
+    cleaned.reserve(ir.size());
+    {
+        std::stringstream ss(ir);
+        std::string line;
+        while (std::getline(ss, line)) {
+            // Remove trailing ", !... metadata" from instruction lines
+            // Also remove standalone metadata lines (lines starting with !)
+            auto comma_bang = line.find(", !");
+            if (comma_bang != std::string::npos) {
+                line = line.substr(0, comma_bang);
+            }
+            // Skip standalone metadata definition lines: !N = !{...}
+            // but keep !dbg references etc. that are already stripped above
+            if (!line.empty() && line[0] == '!' && line.find('=') != std::string::npos) {
+                continue;
+            }
+            cleaned += line;
+            cleaned += '\n';
+        }
+    }
+
     try {
         // Create ANTLR4 input stream
-        antlr4::ANTLRInputStream input(ir);
+        antlr4::ANTLRInputStream input(cleaned);
         
         // Create lexer and tokenize
         antlr::generated::LLVMIRLexer lexer(&input);

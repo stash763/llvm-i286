@@ -205,9 +205,9 @@ std::vector<LoweredInstruction> lowerCondBrTerm(SelectorState& state,
         jmpFalse.operands.push_back(falseLabel);
         lowered.instructions.push_back(jmpFalse);
 
-        // Near true label
+        // Near true label (trampoline - use unique name to avoid duplicating the real BB label)
         LoweredInstruction nearTrueLabelInst;
-        nearTrueLabelInst.label = nearTrueLabel;
+        nearTrueLabelInst.label = prefix + "bb_" + irInst.operands[1].name + "_near";
         loweredVec.push_back(lowered);
         lowered = LoweredInstruction{};
         loweredVec.push_back(nearTrueLabelInst);
