@@ -87,6 +87,9 @@ std::string CodeGen::generate(const ir::Module& module) {
             if (funcName.find("llvm.memcpy") != std::string::npos) {
                 funcName = "memcpy"; // Rename to plain memcpy
             }
+            if (funcName.find("llvm.memset") != std::string::npos) {
+                funcName = "memset"; // Rename to plain memset
+            }
             if (funcName == "llvm.va_start" || funcName == "llvm.va_end") {
                 continue; // Skip - generated inline
             }

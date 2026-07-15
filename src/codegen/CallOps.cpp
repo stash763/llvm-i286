@@ -279,6 +279,12 @@ std::vector<LoweredInstruction> lowerCall(SelectorState& state,
         callee = "memcpy";
     }
     
+    // Handle LLVM intrinsics: lower llvm.memset to memset call
+    bool isLLVMMemset = (callee.find("llvm.memset") != std::string::npos);
+    if (isLLVMMemset) {
+        callee = "memset";
+    }
+    
     // Skip inline assembly calls (compiler barriers, etc.)
     if (callee.find("asm") == 0 || callee.find("asm sideeffect") == 0) {
         // Inline asm is a no-op for our purposes - just return empty lowered
@@ -315,6 +321,12 @@ std::vector<LoweredInstruction> lowerCall(SelectorState& state,
     // For llvm.memcpy intrinsic: drop the last argument (is_volatile, i1 type)
     // llvm.memcpy has 4 args: (dst, src, size, is_volatile) but memcpy has 3: (dst, src, size)
     if (isLLVMMemcpy && args.size() > 3) {
+        args.pop_back();
+    }
+    
+    // For llvm.memset intrinsic: drop the last argument (is_volatile, i1 type)
+    // llvm.memset has 4 args: (dst, val, size, is_volatile) but memset has 3: (dst, val, size)
+    if (isLLVMMemset && args.size() > 3) {
         args.pop_back();
     }
     
