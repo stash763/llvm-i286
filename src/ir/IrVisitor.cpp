@@ -875,6 +875,12 @@ std::unique_ptr<Instruction> IrVisitor::parseInstruction(LLVMIRParser::ValueInst
                 size_t spacePos = typeText.find(' ');
                 std::string typeStr = spacePos != std::string::npos ? typeText.substr(0, spacePos) : typeText;
                 inst->resultType = Type::makeInteger(parseIntWidth(typeStr));
+            } else if (typeText == "ptr") {
+                // Pointer return type (32-bit)
+                inst->resultType = std::make_unique<Type>();
+                inst->resultType->kind = TypeKind::Pointer;
+                inst->resultType->elementType = Type::makeVoid();
+                inst->resultType->bitWidth = 32;
             }
         }
         
