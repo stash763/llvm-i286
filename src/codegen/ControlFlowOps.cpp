@@ -33,6 +33,9 @@ std::vector<LoweredInstruction> lowerRetTerm(SelectorState& state,
         bool is32 = state.frame.is32bit(retValName) ||
                     (irInst.resultType && irInst.resultType->bitWidth == 32);
 
+        // Check if return value is a global reference (starts with @)
+        bool isGlobal = (!retValName.empty() && retValName[0] == '@');
+
         if (isConst) {
             // Load constant into AX
             Instruction286 movConst;
@@ -48,6 +51,22 @@ std::vector<LoweredInstruction> lowerRetTerm(SelectorState& state,
                 xorDx.operands.push_back("dx");
                 lowered.instructions.push_back(xorDx);
             }
+        } else if (isGlobal) {
+            // Global reference - load address of global into AX:DX
+            // Remove @ prefix for NASM
+            std::string nasmName = retValName.substr(1);
+            // Load offset into AX
+            Instruction286 leaAx;
+            leaAx.mnemonic = "lea";
+            leaAx.operands.push_back("ax");
+            leaAx.operands.push_back("[" + nasmName + "]");
+            lowered.instructions.push_back(leaAx);
+            // Load segment into DX
+            Instruction286 movSeg;
+            movSeg.mnemonic = "mov";
+            movSeg.operands.push_back("dx");
+            movSeg.operands.push_back("seg " + nasmName);
+            lowered.instructions.push_back(movSeg);
         } else {
             // Value is a vreg - use StackFrame to get its location
             std::string retValReg = state.frame.getPhysReg(retValName);

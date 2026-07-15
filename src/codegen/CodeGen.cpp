@@ -259,9 +259,87 @@ std::string CodeGen::generate(const ir::Module& module) {
                 }
 
                 if (isComplex) {
-                    // Complex initializer: emit as zero-initialized BSS data
-                    bssSegment += dataLabel + ":\n";
-                    bssSegment += "\tresb " + std::to_string(byteSize) + "\n\n";
+                    // Check if this is a struct initializer with global references
+                    // Pattern: { ptr @name } or { i32 42, ptr @name }
+                    std::string initText = initValue;
+                    if (initText.find("{") == 0 && initText.find("}") == initText.size() - 1) {
+                        // Struct initializer - parse fields
+                        std::string fields = initText.substr(1, initText.size() - 2);
+                        // Split by comma
+                        std::vector<std::string> fieldList;
+                        std::string current;
+                        int parenDepth = 0;
+                        for (char c : fields) {
+                            if (c == '{' || c == '[') parenDepth++;
+                            else if (c == '}' || c == ']') parenDepth--;
+                            else if (c == ',' && parenDepth == 0) {
+                                fieldList.push_back(current);
+                                current.clear();
+                                continue;
+                            }
+                            current += c;
+                        }
+                        if (!current.empty()) fieldList.push_back(current);
+                        
+                        // Emit initialized data
+                        dataSegment += dataLabel + ":\n";
+                        for (const auto& field : fieldList) {
+                            // Trim whitespace
+                            size_t start = field.find_first_not_of(" \t");
+                            if (start == std::string::npos) continue;
+                            std::string trimmed = field.substr(start);
+                            
+                            // Check if field is a global reference: ptr @name, i32* @name, etc.
+                            size_t atPos = trimmed.find('@');
+                            if (atPos != std::string::npos && trimmed.find("getelementptr") == std::string::npos) {
+                                // Global reference - emit as far pointer (offset, segment)
+                                std::string refName = trimmed.substr(atPos + 1);
+                                // Trim trailing whitespace/comma
+                                size_t end = refName.find_first_of(" \t,}");
+                                if (end != std::string::npos) refName = refName.substr(0, end);
+                                
+                                dataSegment += "\tdw " + refName + "\n";
+                                dataSegment += "\tdw seg " + refName + "\n";
+                            } else if (trimmed.find("zeroinitializer") != std::string::npos || 
+                                       trimmed.find("null") != std::string::npos) {
+                                // Zero/null - emit 0
+                                dataSegment += "\tdw 0\n";
+                                dataSegment += "\tdw 0\n";
+                            } else if (trimmed.find("i32") != std::string::npos || 
+                                       trimmed.find("i16") != std::string::npos ||
+                                       trimmed.find("i8") != std::string::npos) {
+                                // Integer value
+                                std::string numStr;
+                                for (char c : trimmed) {
+                                    if ((c >= '0' && c <= '9') || c == '-') {
+                                        numStr += c;
+                                    }
+                                }
+                                if (!numStr.empty()) {
+                                    try {
+                                        int64_t val = std::stoll(numStr);
+                                        dataSegment += "\tdw " + std::to_string(val & 0xFFFF) + "\n";
+                                        dataSegment += "\tdw 0\n";
+                                    } catch (...) {
+                                        dataSegment += "\tdw 0\n";
+                                        dataSegment += "\tdw 0\n";
+                                    }
+                                } else {
+                                    dataSegment += "\tdw 0\n";
+                                    dataSegment += "\tdw 0\n";
+                                }
+                            } else {
+                                // Unknown field type - emit zero
+                                dataSegment += "\tdw 0\n";
+                                dataSegment += "\tdw 0\n";
+                            }
+                        }
+                        dataSegment += "\n";
+                    } else {
+                        // Complex initializer: emit as zero-initialized BSS data
+                        bssSegment += dataLabel + ":\n";
+                        bssSegment += "\tresb " + std::to_string(byteSize) + "\n\n";
+                    }
                 } else if (initValue.find("getelementptr") != std::string::npos) {
                     // Handle getelementptr constant expression
                     std::string gepBase;
