@@ -52,6 +52,15 @@ struct SelectorState {
     // Type definitions from the module (for GEP offset computation)
     const std::map<std::string, std::unique_ptr<ir::Type>>* typeDefinitions = nullptr;
 
+    // PHI elimination: map from predecessor label to list of PHI stores needed
+    // Each entry is (phiResultName, incomingValue, is32bit)
+    struct PhiStoreInfo {
+        std::string phiResult;
+        std::string incomingValue;
+        bool is32bit;
+    };
+    std::map<std::string, std::vector<PhiStoreInfo>> phiStoresByPred;
+
     // Helper to get next label
     std::string nextLabel(const std::string& prefix = ".L") {
         return prefix + std::to_string(labelCounter++);
@@ -70,6 +79,11 @@ bool isGlobalVar(const std::string& name);
 
 // Convert global variable name to NASM format (".foo" -> "_foo")
 std::string toNasmGlobal(const std::string& name);
+
+// Compute byte offset for a GEP constant expression
+// GEP format: getelementptr [inbounds] (TYPE, ptr @name, i32 N, i32 M, ...)
+int64_t computeGEPByteOffset(const std::string& gepStr,
+                             const std::map<std::string, std::unique_ptr<ir::Type>>* typeDefs);
 
 // ========================================================================
 // Opcode Handler Function Declarations

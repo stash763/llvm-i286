@@ -130,7 +130,7 @@ static std::vector<LoweredInstruction> lowerBinaryOp(
             lowered.instructions.push_back(zeroHigh);
             
             // Stack space pre-allocated in prologue
-            std::string tempSlot = state.frame.allocTemp(4, true);
+            std::string tempSlot = state.frame.allocResultSlot(irInst.resultName, 4, true);
             std::string lowStack = tempSlot;
             std::string highStack = state.frame.getHighBpOffset(tempSlot);
             
@@ -214,7 +214,7 @@ static std::vector<LoweredInstruction> lowerShiftOp(
         }
 
         // Allocate result on stack (4 words = 8 bytes)
-        std::string resultStack = state.frame.allocTemp(8, true);
+        std::string resultStack = state.frame.allocResultSlot(irInst.resultName, 8, true);
 
         // Helper to build bp-relative offset string with pre-calculated offset
         auto makeOffset = [](const std::string& base, int offset) -> std::string {

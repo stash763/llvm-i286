@@ -79,7 +79,8 @@ std::vector<LoweredInstruction> InstructionSelector::lowerInstruction(const ir::
         case ir::Opcode::RetTerm:  return lowerRetTerm(*impl, irInst, resultReg);
         case ir::Opcode::BrTerm:   return lowerBrTerm(*impl, irInst, resultReg);
         case ir::Opcode::CondBrTerm: return lowerCondBrTerm(*impl, irInst, resultReg);
-        case ir::Opcode::Switch:   return lowerSwitch(*impl, irInst, resultReg);
+        case ir::Opcode::Switch:
+        case ir::Opcode::SwitchTerm:   return lowerSwitch(*impl, irInst, resultReg);
         case ir::Opcode::Phi:      return lowerPhi(*impl, irInst, resultReg);
         case ir::Opcode::Unreachable: return lowerUnreachable(*impl, irInst, resultReg);
         case ir::Opcode::Select:   return lowerSelect(*impl, irInst, resultReg);
@@ -144,10 +145,154 @@ std::vector<LoweredInstruction> InstructionSelector::lowerBasicBlock(const ir::B
         lowered.push_back(labelInst);
     }
 
+    // PHI elimination: at the start of this block, load each PHI result
+    // from its spill slot into ax:dx (or ax for 16-bit)
+    for (const auto& inst : bb.instructions) {
+        if (inst->opcode == ir::Opcode::Phi && !inst->resultName.empty()) {
+            const std::string& phiResult = inst->resultName;
+            bool is32 = impl->frame.is32bit(phiResult);
+
+            LoweredInstruction phiLoad;
+            Instruction286 loadLow, loadHigh;
+
+            if (impl->frame.hasSlot(phiResult)) {
+                std::string offset = impl->frame.getBpOffset(phiResult);
+                loadLow.mnemonic = "mov";
+                loadLow.operands = {"ax", "[" + offset + "]"};
+                loadLow.comment = "phi load " + phiResult;
+                phiLoad.instructions.push_back(loadLow);
+
+                if (is32) {
+                    std::string highOffset = impl->frame.getHighBpOffset(phiResult);
+                    loadHigh.mnemonic = "mov";
+                    loadHigh.operands = {"dx", "[" + highOffset + "]"};
+                    phiLoad.instructions.push_back(loadHigh);
+                }
+            }
+
+            // Map PHI result to ax:dx so subsequent code uses registers
+            impl->frame.setPhysReg(phiResult, "ax");
+
+            lowered.push_back(phiLoad);
+        }
+    }
+
     // Lower each non-terminator instruction
     for (const auto& inst : bb.instructions) {
         auto instLowered = lowerInstruction(*inst);
         lowered.insert(lowered.end(), instLowered.begin(), instLowered.end());
+    }
+
+    // PHI elimination: at the end of this block (before terminator),
+    // store incoming values to PHI spill slots in successor blocks
+    {
+        auto predIt = impl->phiStoresByPred.find(bb.label);
+        if (predIt != impl->phiStoresByPred.end()) {
+            for (const auto& phiInfo : predIt->second) {
+                LoweredInstruction phiStore;
+                const std::string& incomingValue = phiInfo.incomingValue;
+                const std::string& phiResult = phiInfo.phiResult;
+                bool is32 = phiInfo.is32bit;
+
+                // Get the PHI result's spill slot
+                if (!impl->frame.hasSlot(phiResult)) {
+                    continue; // no spill slot for this PHI
+                }
+                std::string phiOffset = impl->frame.getBpOffset(phiResult);
+                std::string phiHighOffset = impl->frame.getHighBpOffset(phiResult);
+
+                // Load the incoming value into ax:dx (or ax for 16-bit)
+                // The incoming value is a vreg that should have a slot
+                if (incomingValue[0] == '%') {
+                    // Vreg: load from its slot if it has one
+                    if (impl->frame.hasSlot(incomingValue)) {
+                        std::string srcOffset = impl->frame.getBpOffset(incomingValue);
+                        Instruction286 loadLow;
+                        loadLow.mnemonic = "mov";
+                        loadLow.operands = {"ax", "[" + srcOffset + "]"};
+                        loadLow.comment = "phi incoming " + incomingValue + " -> " + phiResult;
+                        phiStore.instructions.push_back(loadLow);
+
+                        if (is32) {
+                            std::string srcHigh = impl->frame.getHighBpOffset(incomingValue);
+                            Instruction286 loadHigh;
+                            loadHigh.mnemonic = "mov";
+                            loadHigh.operands = {"dx", "[" + srcHigh + "]"};
+                            phiStore.instructions.push_back(loadHigh);
+                        }
+                    } else {
+                        // Vreg has no slot - assume it's in ax:dx already
+                        // No load needed, just add comment
+                        Instruction286 comment;
+                        comment.mnemonic = "nop";
+                        comment.comment = "phi incoming " + incomingValue + " in reg -> " + phiResult;
+                        phiStore.instructions.push_back(comment);
+                    }
+                } else if (incomingValue[0] == '@') {
+                    // Global: load address via lea
+                    std::string globalName = incomingValue.substr(1);
+                    if (!globalName.empty() && globalName[0] == '.')
+                        globalName = "_" + globalName.substr(1);
+
+                    Instruction286 leaInst;
+                    leaInst.mnemonic = "lea";
+                    leaInst.operands = {"ax", "[" + globalName + "]"};
+                    leaInst.comment = "phi incoming global " + incomingValue + " -> " + phiResult;
+                    phiStore.instructions.push_back(leaInst);
+
+                    if (is32) {
+                        Instruction286 segInst;
+                        segInst.mnemonic = "mov";
+                        segInst.operands = {"dx", "ds"};
+                        phiStore.instructions.push_back(segInst);
+                    }
+                } else {
+                    // Constant: load directly
+                    // Handle null as 0 (LLVM null constant)
+                    std::string constVal = incomingValue;
+                    if (constVal == "null") constVal = "0";
+                    if (constVal == "false") constVal = "0";
+                    if (constVal == "true") constVal = "1";
+                    if (constVal == "undef") constVal = "0";
+                    // Detect floating-point constants (e.g., "0.000000e+00", "0xK...")
+                    // and replace with 0 — FP constants not supported in integer mov
+                    bool isFPConst = constVal.find("0xK") != std::string::npos ||
+                                     (constVal.find('e') != std::string::npos &&
+                                      (constVal.find('+') != std::string::npos || constVal.find('-') != std::string::npos));
+                    if (isFPConst) constVal = "0";
+                    // Detect complex constant expressions (mul, ptrtoint, etc.)
+                    if (constVal.find('(') != std::string::npos) constVal = "0";
+
+                    Instruction286 loadConst;
+                    loadConst.mnemonic = "mov";
+                    loadConst.operands = {"ax", constVal};
+                    loadConst.comment = "phi incoming const " + incomingValue + " -> " + phiResult;
+                    phiStore.instructions.push_back(loadConst);
+
+                    if (is32) {
+                        Instruction286 zeroHigh;
+                        zeroHigh.mnemonic = "xor";
+                        zeroHigh.operands = {"dx", "dx"};
+                        phiStore.instructions.push_back(zeroHigh);
+                    }
+                }
+
+                // Store ax:dx to the PHI's spill slot
+                Instruction286 storeLow;
+                storeLow.mnemonic = "mov";
+                storeLow.operands = {"[" + phiOffset + "]", "ax"};
+                phiStore.instructions.push_back(storeLow);
+
+                if (is32) {
+                    Instruction286 storeHigh;
+                    storeHigh.mnemonic = "mov";
+                    storeHigh.operands = {"[" + phiHighOffset + "]", "dx"};
+                    phiStore.instructions.push_back(storeHigh);
+                }
+
+                lowered.push_back(phiStore);
+            }
+        }
     }
 
     // NOTE: No tempSpaceInBlock cleanup here.
@@ -178,6 +323,51 @@ std::vector<LoweredInstruction> InstructionSelector::lowerFunction(const ir::Fun
 
     // Pass 2: Compute frame layout (assign final offsets)
     impl->frame.computeLayout();
+
+    // Build PHI store map for PHI elimination
+    // For each PHI node, register the incoming values keyed by predecessor label
+    impl->phiStoresByPred.clear();
+    for (const auto& bb : func.basicBlocks) {
+        for (const auto& inst : bb->instructions) {
+            if (inst->opcode == ir::Opcode::Phi && !inst->resultName.empty()) {
+                bool is32 = false;
+                if (inst->resultType) {
+                    is32 = (inst->resultType->bitWidth == 32);
+                }
+                for (const auto& phiInc : inst->phiIncrements) {
+                    impl->phiStoresByPred[phiInc.label].push_back({
+                        inst->resultName,
+                        phiInc.value,
+                        is32
+                    });
+                }
+            }
+        }
+    }
+
+    // Map unmatched PHI labels to the entry block
+    // In LLVM IR, the entry block is unnamed but PHI nodes reference it
+    // by its implicit number (e.g., %2 when params are %0, %1)
+    std::set<std::string> blockLabels;
+    for (const auto& bb : func.basicBlocks) {
+        if (!bb->label.empty()) blockLabels.insert(bb->label);
+    }
+    std::string entryLabel;
+    if (!func.basicBlocks.empty()) {
+        entryLabel = func.basicBlocks[0]->label;
+    }
+    std::vector<std::string> unmatchedLabels;
+    for (const auto& [label, _] : impl->phiStoresByPred) {
+        if (!label.empty() && blockLabels.find(label) == blockLabels.end()) {
+            unmatchedLabels.push_back(label);
+        }
+    }
+    for (const auto& label : unmatchedLabels) {
+        auto it = impl->phiStoresByPred.find(label);
+        for (const auto& store : it->second) {
+            impl->phiStoresByPred[entryLabel].push_back(store);
+        }
+    }
 
     std::vector<LoweredInstruction> lowered;
 

@@ -21,6 +21,25 @@ void FunctionAnalysis::analyze(const ir::Function& func, StackFrame& frame,
     // Step 3: Compute cross-block liveness
     computeLiveness(blockInfos, frame);
 
+    // Step 3.5: Ensure all PHI results get spill slots (needed for PHI elimination)
+    for (const auto& bb : func.basicBlocks) {
+        for (const auto& inst : bb->instructions) {
+            if (inst->opcode == ir::Opcode::Phi && !inst->resultName.empty()) {
+                const std::string& phiResult = inst->resultName;
+                if (!frame.hasSlot(phiResult) && !frame.isAlloca(phiResult)) {
+                    bool is32 = false;
+                    if (inst->resultType) {
+                        is32 = (inst->resultType->bitWidth == 32);
+                    } else {
+                        is32 = true; // conservative default
+                    }
+                    int byteSize = is32 ? 4 : 2;
+                    frame.addSpillSlot(phiResult, byteSize, is32);
+                }
+            }
+        }
+    }
+
     // Step 4: Compute max temp space
     computeMaxTempSpace(blockInfos, frame);
 }
@@ -137,32 +156,21 @@ void FunctionAnalysis::analyzeBlocks(const ir::Function& func, StackFrame& frame
 
                 // Create a dedicated alloca slot (persists across blocks)
                 frame.addAllocaSlot(inst->resultName, byteSize);
-            } else if (inst->opcode == ir::Opcode::Load || inst->opcode == ir::Opcode::Store) {
-                // 32-bit loads produce values that need temp storage
-                if (is32) {
-                    info.tempSpaceNeeded += 4;
-                }
             } else {
-                // 32-bit arithmetic, conversions, GEP produce values needing temp storage
-                switch (inst->opcode) {
-                    case ir::Opcode::Add:
-                    case ir::Opcode::Sub:
-                    case ir::Opcode::Mul:
-                    case ir::Opcode::SDiv:
-                    case ir::Opcode::UDiv:
-                    case ir::Opcode::SRem:
-                    case ir::Opcode::URem:
-                    case ir::Opcode::GetElementPtr:
-                    case ir::Opcode::SExt:
-                    case ir::Opcode::ZExt:
-                    case ir::Opcode::PtrToInt:
-                    case ir::Opcode::IntToPtr:
-                        if (is32) {
-                            info.tempSpaceNeeded += 4;
-                        }
-                        break;
-                    default:
-                        break;
+                // Any instruction with a non-empty result needs temp storage
+                // 32-bit results need 4 bytes, others need 2 bytes
+                // This covers Load, Call, Add, Sub, Mul, Div, bitwise ops,
+                // conversions, GEP, ICmp, Select, Phi, etc.
+                if (!inst->resultName.empty()) {
+                    if (is32) {
+                        info.tempSpaceNeeded += 4;
+                    } else {
+                        info.tempSpaceNeeded += 2;
+                    }
+                }
+                // Load through register pointer needs extra 4 bytes for pointer save
+                if (inst->opcode == ir::Opcode::Load && !inst->resultName.empty()) {
+                    info.tempSpaceNeeded += 4;
                 }
             }
         }
@@ -201,18 +209,15 @@ void FunctionAnalysis::computeLiveness(const std::vector<BlockInfo>& blockInfos,
 
     // Add spill slots for cross-block vregs
     for (const auto& vreg : crossBlockVregs) {
-        // Skip if this vreg already has an alloca slot
         if (frame.isAlloca(vreg)) {
             continue;
         }
 
-        // Determine size (default to 2 bytes, 4 if 32-bit)
-        // We'll check the vreg name for hints, but ideally the frame already has info
         bool is32 = false;
-        // TODO: better way to determine if this vreg is 32-bit
-        // For now, check if it's in the frame and marked 32-bit
         if (frame.hasSlot(vreg)) {
             is32 = frame.is32bit(vreg);
+        } else {
+            is32 = true;
         }
 
         int byteSize = is32 ? 4 : 2;

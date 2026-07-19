@@ -137,7 +137,7 @@ std::vector<LoweredInstruction> lowerZExt(SelectorState& state,
             lowered.instructions.push_back(clearDx);
 
             // Allocate temp slot for 32-bit result (pre-allocated in prologue)
-            std::string resultStack = state.frame.allocTemp(4, true);
+            std::string resultStack = state.frame.allocResultSlot(irInst.resultName, 4, true);
 
             // Store low word (ax) to temp
             Instruction286 storeLow;
@@ -217,7 +217,7 @@ std::vector<LoweredInstruction> lowerSExt(SelectorState& state,
         if (!irInst.resultName.empty()) {
             // Allocate stack space for the result (32-bit for sign-extended values)
             // Stack space pre-allocated in prologue
-            std::string resultStack = state.frame.allocTemp(4, true);
+            std::string resultStack = state.frame.allocResultSlot(irInst.resultName, 4, true);
 
             // Sign-extend: for 8-bit to 32-bit, use cbw then cwd
             // For 16-bit to 32-bit, use cwd
@@ -474,7 +474,7 @@ std::vector<LoweredInstruction> lowerPtrToInt(SelectorState& state,
 
         // Store result in memory (32-bit value in AX:DX)
         // Allocate space on stack for the result (pre-allocated in prologue)
-        std::string resultStack = state.frame.allocTemp(4, true);
+        std::string resultStack = state.frame.allocResultSlot(irInst.resultName, 4, true);
         std::string highOffsetStr = state.frame.getHighBpOffset(resultStack);
 
         // Store low word
@@ -544,7 +544,7 @@ std::vector<LoweredInstruction> lowerIntToPtr(SelectorState& state,
 
         // Store result in memory (32-bit value in AX:DX)
         // Allocate space on stack for the result (pre-allocated in prologue)
-        std::string resultStack = state.frame.allocTemp(4, true);
+        std::string resultStack = state.frame.allocResultSlot(irInst.resultName, 4, true);
         std::string highOffsetStr = state.frame.getHighBpOffset(resultStack);
 
         // Store low word

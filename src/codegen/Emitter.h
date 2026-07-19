@@ -28,7 +28,8 @@ public:
     // Emit a complete function
    std::string emitFunction(const std::vector<LoweredInstruction>& instructions,
                               const std::string& funcName,
-                              int frameSize = 0);
+                              int frameSize = 0,
+                              const std::string& linkage = "");
     
     // Emit complete NASM file with segments
     // entryFuncName: name of function to call from ..start (empty = emit code directly)
@@ -38,7 +39,8 @@ public:
                           const std::string& bssSegment,
                           const std::string& entryFuncName = "",
                           const std::vector<std::string>& externFuncs = std::vector<std::string>(),
-                          const std::vector<std::string>& externGlobals = std::vector<std::string>());
+                          const std::vector<std::string>& externGlobals = std::vector<std::string>(),
+                          const std::vector<std::string>& definedGlobals = std::vector<std::string>());
     
     // Get the output stream for building up output
     std::stringstream& getStream() { return output; }

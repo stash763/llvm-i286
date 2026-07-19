@@ -83,7 +83,7 @@ static std::string parseTypeName(const std::string& str, size_t& pos) {
 
 // Compute byte offset for a GEP constant expression
 // GEP format: getelementptr [inbounds] (TYPE, ptr @name, i32 N, i32 M, ...)
-static int64_t computeGEPByteOffset(const std::string& gepStr,
+int64_t computeGEPByteOffset(const std::string& gepStr,
                                     const std::map<std::string, std::unique_ptr<ir::Type>>* typeDefs) {
     // Find the opening paren after getelementptr
     auto parenPos = gepStr.find('(');
@@ -206,12 +206,37 @@ static int64_t computeGEPByteOffset(const std::string& gepStr,
             currentType = it->second.get();
         }
     } else if (sourceType[0] == '[') {
-        // For arrays, after first index we're at element type
-        // But first index 0 means we're at the array, then second index indexes into array
-        // Actually, first index indexes through source type (array of arrays)
-        // Second index indexes into the array element
-        // For [N x i8], second index M → M * sizeof(i8) = M
-        // We need to handle this differently
+        // Array source type: [NxTYPE]
+        // After first index, we're inside the array; subsequent indices index into elements
+        auto xPos = sourceType.find("x");
+        if (xPos != std::string::npos) {
+            // Parse element type after 'x'
+            std::string elemType;
+            size_t j = xPos + 1;
+            while (j < sourceType.size() && sourceType[j] == ' ') j++;
+            while (j < sourceType.size() && sourceType[j] != ']' && sourceType[j] != ' ') j++;
+            elemType = sourceType.substr(xPos + 1, j - xPos - 1);
+            while (!elemType.empty() && elemType.back() == ' ') elemType.pop_back();
+            while (!elemType.empty() && elemType.front() == ' ') elemType.erase(0, 1);
+
+            auto arrType = std::make_unique<ir::Type>();
+            arrType->kind = ir::TypeKind::Array;
+            if (elemType == "ptr") {
+                arrType->elementType = ir::Type::makeInteger(32);
+            } else if (elemType == "i8") {
+                arrType->elementType = ir::Type::makeInteger(8);
+            } else if (elemType == "i16") {
+                arrType->elementType = ir::Type::makeInteger(16);
+            } else if (elemType == "i32") {
+                arrType->elementType = ir::Type::makeInteger(32);
+            } else if (elemType == "i64") {
+                arrType->elementType = ir::Type::makeInteger(64);
+            } else {
+                arrType->elementType = ir::Type::makeVoid();
+            }
+            resolvedType = std::move(arrType);
+            currentType = resolvedType.get();
+        }
     }
     
     for (size_t i = 1; i < indices.size() && currentType; i++) {
@@ -273,6 +298,54 @@ std::vector<LoweredInstruction> lowerCall(SelectorState& state,
         callee = irInst.operands[0].name;
     }
 
+    // Handle inline asm calls: asm "", "=r,0,..."(@function)
+    // This is a no-op template that loads a function address into a register.
+    // Emit: lea ax, [function]; mov dx, cs  (for code pointers)
+    // Then store result to vreg's spill slot.
+    if (irInst.isInlineAsm) {
+        std::string funcName = safeNasmName(callee);
+        // Convert leading dot to underscore (@.str -> _str)
+        if (!funcName.empty() && funcName[0] == '.') {
+            funcName = "_" + funcName.substr(1);
+        }
+        
+        LoweredInstruction loadAddr;
+        
+        Instruction286 leaAx;
+        leaAx.mnemonic = "lea";
+        leaAx.operands.push_back("ax");
+        leaAx.operands.push_back("[" + funcName + "]");
+        loadAddr.instructions.push_back(leaAx);
+        
+        Instruction286 movDxCs;
+        movDxCs.mnemonic = "mov";
+        movDxCs.operands.push_back("dx");
+        movDxCs.operands.push_back("cs");
+        loadAddr.instructions.push_back(movDxCs);
+        
+        // Store result to spill slot if there's a result vreg
+        if (!irInst.resultName.empty()) {
+            std::string slot = state.frame.allocResultSlot(irInst.resultName, 4, true);
+            Instruction286 storeLow;
+            storeLow.mnemonic = "mov";
+            storeLow.operands.push_back("[" + slot + "]");
+            storeLow.operands.push_back("ax");
+            loadAddr.instructions.push_back(storeLow);
+            
+            std::string highOffset = state.frame.getHighBpOffset(slot);
+            Instruction286 storeHigh;
+            storeHigh.mnemonic = "mov";
+            storeHigh.operands.push_back("[" + highOffset + "]");
+            storeHigh.operands.push_back("dx");
+            loadAddr.instructions.push_back(storeHigh);
+            
+            state.frame.setPhysReg(irInst.resultName, slot);
+        }
+        
+        loweredVec.push_back(loadAddr);
+        return loweredVec;
+    }
+
     // Handle LLVM intrinsics: lower llvm.memcpy to memcpy call
     bool isLLVMMemcpy = (callee.find("llvm.memcpy") != std::string::npos);
     if (isLLVMMemcpy) {
@@ -288,6 +361,11 @@ std::vector<LoweredInstruction> lowerCall(SelectorState& state,
     // Skip inline assembly calls (compiler barriers, etc.)
     if (callee.find("asm") == 0 || callee.find("asm sideeffect") == 0) {
         // Inline asm is a no-op for our purposes - just return empty lowered
+        return loweredVec;
+    }
+    
+    // Skip null function pointer calls (undefined behavior)
+    if (callee == "null" || callee == "0") {
         return loweredVec;
     }
     
@@ -409,7 +487,6 @@ std::vector<LoweredInstruction> lowerCall(SelectorState& state,
         std::string gepGlobalName;
         int64_t gepOffset = 0;
         if (isGEPExpr) {
-            fprintf(stderr, "DEBUG isGEPExpr: argName='%s'\n", argName.c_str());
             // Parse: getelementptr(TYPE, ptr @name, i32 N, i32 M, ...)
             auto atPos = argName.find('@');
             if (atPos != std::string::npos) {
@@ -477,25 +554,21 @@ std::vector<LoweredInstruction> lowerCall(SelectorState& state,
             isGlobal = true;
         }
 
-        // Convert global variable name to NASM format (remove leading dot or @)
+        // Convert global variable name to NASM format
+        // Must match CodeGen.cpp definition: .str → _str, @main → main
         std::string nasmName = argName;
         if (isGEPExpr && !gepGlobalName.empty()) {
-            // GEP expression: use the extracted global name with mangling
             nasmName = gepGlobalName;
-            if (nasmName.size() > 1 && nasmName[0] == '.') {
-                nasmName[0] = '_';
-            }
-        } else if (isGlobal && nasmName.size() > 1 && !isPtrToIntExpr) {
-            // Regular global: convert leading . or @ to _ for NASM compatibility
-            if (nasmName[0] == '.' || nasmName[0] == '@') {
-                nasmName[0] = '_';
-            }
         } else if (isGlobal && isPtrToIntExpr && !ptrToIntGlobalName.empty()) {
-            // ptrtoint expression: use the extracted global name with mangling
             nasmName = ptrToIntGlobalName;
-            if (nasmName.size() > 1 && nasmName[0] == '.') {
-                nasmName[0] = '_';
-            }
+        }
+        // Strip @ prefix (function names like @main → main)
+        if (!nasmName.empty() && nasmName[0] == '@') {
+            nasmName = nasmName.substr(1);
+        }
+        // Convert . prefix to _ (hidden globals like .str → _str)
+        if (!nasmName.empty() && nasmName[0] == '.') {
+            nasmName = "_" + nasmName.substr(1);
         }
         // Mangle NASM reserved words
         if (!nasmName.empty()) {
@@ -513,28 +586,37 @@ std::vector<LoweredInstruction> lowerCall(SelectorState& state,
         // Check if argument is a constant (not a vreg)
         bool isConst = false;
         if (!argIsVreg && !isGlobal) {
-            try {
-                std::stoi(argName);
+            if (argName == "null") {
                 isConst = true;
-            } catch (...) {}
+            } else {
+                try {
+                    std::stoi(argName);
+                    isConst = true;
+                } catch (...) {}
+            }
         }
 
         // Check if this is a 32-bit argument
-        // Look up the function's parameter types to determine if this argument is 32-bit
+        // For LLVM intrinsics renamed to C functions (memset/memcpy), all arguments
+        // are 32-bit per C ABI (int and size_t are 32-bit; i8 is promoted to int)
         bool is32 = false;
-        auto declIt = state.funcParamBitWidths.find(callee);
-        if (declIt != state.funcParamBitWidths.end()) {
-            // Use the function's parameter types
-            if (i >= 0 && i < (int)declIt->second.size()) {
-                is32 = (declIt->second[i] == 32);
-            } else if (i >= (int)declIt->second.size()) {
-                // Argument beyond the fixed parameter count (variadic function)
-                // Fall back to result type or assume 32-bit
-                is32 = irInst.resultType ? (irInst.resultType->bitWidth == 32) : true;
+        if (isLLVMMemset || isLLVMMemcpy) {
+            is32 = true;
+        } else {
+            auto declIt = state.funcParamBitWidths.find(callee);
+            if (declIt != state.funcParamBitWidths.end()) {
+                // Use the function's parameter types
+                if (i >= 0 && i < (int)declIt->second.size()) {
+                    is32 = (declIt->second[i] == 32);
+                } else if (i >= (int)declIt->second.size()) {
+                    // Argument beyond the fixed parameter count (variadic function)
+                    // Fall back to result type or assume 32-bit
+                    is32 = irInst.resultType ? (irInst.resultType->bitWidth == 32) : true;
+                }
+            } else if (irInst.resultType) {
+                // Fallback: assume all arguments are the same type as result
+                is32 = irInst.resultType->bitWidth == 32;
             }
-        } else if (irInst.resultType) {
-            // Fallback: assume all arguments are the same type as result
-            is32 = irInst.resultType->bitWidth == 32;
         }
 
         if (is32) {
@@ -546,21 +628,20 @@ std::vector<LoweredInstruction> lowerCall(SelectorState& state,
                 if (isPtrArg) {
                     // Pointer argument - push the far pointer ADDRESS (seg:offset)
                     if (isGEPExpr) {
-                        // GEP: compute address via lea, then push
+                        // GEP: compute address via lea, then add offset, then push
+                        // (OMF fixup doesn't preserve constant displacement in lea)
                         Instruction286 leaAddr;
                         leaAddr.mnemonic = "lea";
                         leaAddr.operands.push_back("ax");
-                        std::string leaOperand = "[" + nasmName;
-                        if (gepOffset != 0) {
-                            if (gepOffset > 0) {
-                                leaOperand += "+" + std::to_string(gepOffset);
-                            } else {
-                                leaOperand += std::to_string(gepOffset);
-                            }
-                        }
-                        leaOperand += "]";
-                        leaAddr.operands.push_back(leaOperand);
+                        leaAddr.operands.push_back("[" + nasmName + "]");
                         lowered.instructions.push_back(leaAddr);
+                        if (gepOffset != 0) {
+                            Instruction286 addOff;
+                            addOff.mnemonic = "add";
+                            addOff.operands.push_back("ax");
+                            addOff.operands.push_back(std::to_string(gepOffset));
+                            lowered.instructions.push_back(addOff);
+                        }
 
                         Instruction286 pushHigh;
                         pushHigh.mnemonic = "push";
@@ -572,25 +653,40 @@ std::vector<LoweredInstruction> lowerCall(SelectorState& state,
                         pushLow.operands.push_back("ax");
                         lowered.instructions.push_back(pushLow);
                     } else {
-                    // Push selector (high word) first, then offset (low word)
-                    // Stack layout: [offset][selector] (little-endian)
+                    // Non-GEP global pointer argument: push far pointer address
+                    // seg fixups resolve to 0xFFFF in OMF, so use lea + push cs/ds
+                    // Check if this is a function (in CS) or data (in DS)
+                    std::string nameWithoutPrefix = argName;
+                    if (!nameWithoutPrefix.empty() && nameWithoutPrefix[0] == '@') {
+                        nameWithoutPrefix = nameWithoutPrefix.substr(1);
+                    }
+                    bool isFunction = (state.funcParamBitWidths.find(nameWithoutPrefix) != state.funcParamBitWidths.end());
+
+                    Instruction286 leaAddr;
+                    leaAddr.mnemonic = "lea";
+                    leaAddr.operands.push_back("ax");
+                    leaAddr.operands.push_back("[" + nasmName + "]");
+                    lowered.instructions.push_back(leaAddr);
+
                     Instruction286 pushHigh;
                     pushHigh.mnemonic = "push";
-                    pushHigh.operands.push_back("seg " + nasmName);
+                    pushHigh.operands.push_back(isFunction ? "cs" : "ds");
                     lowered.instructions.push_back(pushHigh);
-                    
+
                     Instruction286 pushLow;
                     pushLow.mnemonic = "push";
-                    pushLow.operands.push_back(nasmName);
+                    pushLow.operands.push_back("ax");
                     lowered.instructions.push_back(pushLow);
                     }
                } else if (isPtrToIntExpr || isGEPExpr) {
                     // ptrtoint or GEP constant expression - push address of global
                     // High word = 0, low word = address (offset)
+                    // (OMF fixup doesn't preserve constant displacement in lea)
                     Instruction286 leaLow;
                     leaLow.mnemonic = "lea";
                     leaLow.operands.push_back("ax");
-                    std::string leaOperand = "[" + nasmName;
+                    leaLow.operands.push_back("[" + nasmName + "]");
+                    lowered.instructions.push_back(leaLow);
                     int64_t effectiveOffset = 0;
                     if (isGEPExpr) {
                         effectiveOffset = gepOffset;
@@ -598,15 +694,12 @@ std::vector<LoweredInstruction> lowerCall(SelectorState& state,
                         effectiveOffset = ptrToIntGepOffset;
                     }
                     if (effectiveOffset != 0) {
-                        if (effectiveOffset > 0) {
-                            leaOperand += "+" + std::to_string(effectiveOffset);
-                        } else {
-                            leaOperand += std::to_string(effectiveOffset);
-                        }
+                        Instruction286 addOff;
+                        addOff.mnemonic = "add";
+                        addOff.operands.push_back("ax");
+                        addOff.operands.push_back(std::to_string(effectiveOffset));
+                        lowered.instructions.push_back(addOff);
                     }
-                    leaOperand += "]";
-                    leaLow.operands.push_back(leaOperand);
-                    lowered.instructions.push_back(leaLow);
 
                     Instruction286 pushHigh;
                     pushHigh.mnemonic = "push";
@@ -629,6 +722,30 @@ std::vector<LoweredInstruction> lowerCall(SelectorState& state,
                     pushLow.operands.push_back("word [" + nasmName + "]");
                     lowered.instructions.push_back(pushLow);
                 }
+            } else if (isConst) {
+                // 32-bit constant (including null as 0): split into low and high words
+                int32_t val = 0;
+                if (args[i] != "null") {
+                    try { val = std::stoi(args[i]); } catch (...) { val = 0; }
+                }
+                int16_t lowWord = (int16_t)((uint32_t)val & 0xFFFF);
+                int16_t highWord = (int16_t)((uint32_t)val >> 16);
+
+                Instruction286 movConst;
+                movConst.mnemonic = "mov";
+                movConst.operands.push_back("ax");
+                movConst.operands.push_back(std::to_string((int)lowWord));
+                lowered.instructions.push_back(movConst);
+
+                Instruction286 pushHigh;
+                pushHigh.mnemonic = "push";
+                pushHigh.operands.push_back(std::to_string((int)highWord));
+                lowered.instructions.push_back(pushHigh);
+
+                Instruction286 pushLow;
+                pushLow.mnemonic = "push";
+                pushLow.operands.push_back("ax");
+                lowered.instructions.push_back(pushLow);
             } else if (isPtrArg && !isGlobal) {
                 // Pointer vreg argument - push the far pointer ADDRESS (seg:offset)
                 // Get the physical register for the pointer value
@@ -697,37 +814,7 @@ std::vector<LoweredInstruction> lowerCall(SelectorState& state,
                     pushLow.operands.push_back(argReg);
                     lowered.instructions.push_back(pushLow);
                 }
-            } else if (isConst) {
-                // 32-bit constant: split into low and high words
-                // Parse the constant as a 32-bit integer
-                int32_t val = 0;
-                try {
-                    val = std::stoi(args[i]);
-                } catch (...) {
-                    // If parse fails, treat as 0
-                    val = 0;
-                }
-                // Low word: lower 16 bits
-                int16_t lowWord = (int16_t)((uint32_t)val & 0xFFFF);
-                // High word: sign-extended upper 16 bits
-                int16_t highWord = (int16_t)((uint32_t)val >> 16);
-
-                Instruction286 movConst;
-                movConst.mnemonic = "mov";
-                movConst.operands.push_back("ax");
-                movConst.operands.push_back(std::to_string((int)lowWord));
-                lowered.instructions.push_back(movConst);
-
-                Instruction286 pushHigh;
-                pushHigh.mnemonic = "push";
-                pushHigh.operands.push_back(std::to_string((int)highWord));
-                lowered.instructions.push_back(pushHigh);
-
-                Instruction286 pushLow;
-                pushLow.mnemonic = "push";
-                pushLow.operands.push_back("ax");
-                lowered.instructions.push_back(pushLow);
-              } else {
+            } else {
                 // Check if this argument is an alloca result (stack offset IS the address)
                 // Use argName (with % prefix) for consistent lookup with other codegen
                 bool argIsAlloca = state.frame.isAlloca(argName);
@@ -1013,7 +1100,7 @@ std::vector<LoweredInstruction> lowerCall(SelectorState& state,
                 lowered.instructions.push_back(pushCs);
 
                 // call near to trampoline - pushes return IP (continuation addr)
-                std::string trampLabel = state.nextLabel(".indirect_far_");
+                std::string trampLabel = state.currentFunc->name + "_indirect_far_" + std::to_string(state.labelCounter++);
                 Instruction286 callTramp;
                 callTramp.mnemonic = "call";
                 callTramp.operands.push_back(trampLabel);
@@ -1060,8 +1147,11 @@ std::vector<LoweredInstruction> lowerCall(SelectorState& state,
         int stackBytes = 0;
         for (size_t argIdx = 0; argIdx < args.size(); argIdx++) {
             bool isArg32 = false;
-            // Check callArgKinds first (true = pointer arg, which is 32-bit)
-            if (argIdx < irInst.callArgKinds.size() && irInst.callArgKinds[argIdx]) {
+            // For LLVM intrinsics renamed to C functions, all args are 32-bit
+            if (isLLVMMemset || isLLVMMemcpy) {
+                isArg32 = true;
+            } else if (argIdx < irInst.callArgKinds.size() && irInst.callArgKinds[argIdx]) {
+                // Check callArgKinds (true = pointer arg, which is 32-bit)
                 isArg32 = true;
             } else if (isLLVAVaStart && argIdx == args.size() - 1) {
                 // Synthetic last_arg argument for llvm_va_start is a far pointer (32-bit)
@@ -1101,7 +1191,7 @@ std::vector<LoweredInstruction> lowerCall(SelectorState& state,
             // 32-bit result: store ax (low) and dx (high) to stack
             std::string resultStack = state.frame.getPhysReg(irInst.resultName);
             if (resultStack == "ax" || resultStack == "bx" || resultStack == "cx" || resultStack == "dx") {
-                resultStack = state.frame.allocTemp(4, true);
+                resultStack = state.frame.allocResultSlot(irInst.resultName, 4, true);
             }
             Instruction286 storeLow;
             storeLow.mnemonic = "mov";
@@ -1121,7 +1211,7 @@ std::vector<LoweredInstruction> lowerCall(SelectorState& state,
             // 16-bit result: store ax to stack
             std::string resultStack = state.frame.getPhysReg(irInst.resultName);
             if (resultStack == "ax" || resultStack == "bx" || resultStack == "cx" || resultStack == "dx") {
-                resultStack = state.frame.allocTemp(2, false);
+                resultStack = state.frame.allocResultSlot(irInst.resultName, 2, false);
             }
             Instruction286 storeResult;
             storeResult.mnemonic = "mov";

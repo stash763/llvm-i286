@@ -293,6 +293,33 @@ std::string StackFrame::allocTemp(int byteSize, bool is32bit) {
     return offset;
 }
 
+std::string StackFrame::allocResultSlot(const std::string& vregName, int byteSize, bool is32bit) {
+    // If this vreg has a pre-allocated spill slot (cross-block), use it
+    auto it = vregToSlotIndex.find(vregName);
+    if (it != vregToSlotIndex.end()) {
+        const SlotInfo& slot = slots[it->second];
+        if (slot.kind == SlotKind::Spill) {
+            return buildBpOffset(slot.bpOffset);
+        }
+    }
+    // Otherwise, allocate a temp slot and register it under the actual vreg name
+    std::string offset = buildBpOffset(tempCurrent);
+
+    SlotInfo slot;
+    slot.vregName = vregName;
+    slot.byteSize = byteSize;
+    slot.is32bit = is32bit;
+    slot.kind = SlotKind::Temp;
+    slot.bpOffset = tempCurrent;
+
+    vregToSlotIndex[vregName] = static_cast<int>(slots.size());
+    slots.push_back(slot);
+
+    tempCurrent += byteSize;
+
+    return offset;
+}
+
 void StackFrame::resetTemp() {
     // Reset temp pointer to the beginning of temp area
     tempCurrent = tempBase;

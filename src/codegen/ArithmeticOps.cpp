@@ -154,7 +154,7 @@ std::vector<LoweredInstruction> lowerAdd(SelectorState& state,
                 std::string resultStack = state.frame.getPhysReg(irInst.resultName);
                 // If result doesn't have stack space, allocate it
                 if (resultStack.find("bp") == std::string::npos) {
-                    resultStack = state.frame.allocTemp(4, true);
+                    resultStack = state.frame.allocResultSlot(irInst.resultName, 4, true);
                 }
                 Instruction286 storeLow;
                 storeLow.mnemonic = "mov";
@@ -378,7 +378,7 @@ std::vector<LoweredInstruction> lowerSub(SelectorState& state,
                 // Allocate stack space if needed
                 if (resultStack.find("bp") == std::string::npos) {
                     // Stack space pre-allocated in prologue
-                    resultStack = state.frame.allocTemp(4, true);
+                    resultStack = state.frame.allocResultSlot(irInst.resultName, 4, true);
                 }
                 Instruction286 storeLow;
                 storeLow.mnemonic = "mov";
@@ -524,7 +524,7 @@ std::vector<LoweredInstruction> lowerMul(SelectorState& state,
             std::string resultStack = state.frame.getPhysReg(irInst.resultName);
             if (resultStack.find("bp") == std::string::npos) {
                 // Stack space pre-allocated in prologue
-                resultStack = state.frame.allocTemp(4, true);
+                resultStack = state.frame.allocResultSlot(irInst.resultName, 4, true);
             }
 
             // Use safeMemAddr to handle register operands (ax/cx/dx can't be used for addressing)
@@ -620,10 +620,61 @@ std::vector<LoweredInstruction> lowerMul(SelectorState& state,
         }
     } else {
         // 16-bit multiplication
-        Instruction286 imulInst;
-        imulInst.mnemonic = "imul";
-
+        // Check if either operand is a constant (getPhysReg returns garbage for constants)
+        bool op1IsConst = false, op2IsConst = false;
+        std::string op1ConstVal, op2ConstVal;
         if (irInst.operands.size() >= 2) {
+            try { std::stoi(irInst.operands[0].name); op1IsConst = true; op1ConstVal = irInst.operands[0].name; } catch (...) {}
+            try { std::stoi(irInst.operands[1].name); op2IsConst = true; op2ConstVal = irInst.operands[1].name; } catch (...) {}
+        }
+
+        if (op1IsConst && op2IsConst) {
+            // Both constants: compute at compile time
+            int result = std::stoi(op1ConstVal) * std::stoi(op2ConstVal);
+            Instruction286 movConst;
+            movConst.mnemonic = "mov";
+            movConst.operands.push_back("ax");
+            movConst.operands.push_back(std::to_string(result));
+            lowered.instructions.push_back(movConst);
+        } else if (op2IsConst || op1IsConst) {
+            // One operand is constant: load vreg to AX, constant to CX, then imul cx
+            std::string vregName, constVal;
+            if (op2IsConst) {
+                vregName = irInst.operands[0].name;
+                constVal = op2ConstVal;
+            } else {
+                vregName = irInst.operands[1].name;
+                constVal = op1ConstVal;
+            }
+
+            // Move vreg operand to AX
+            std::string vregPhys = state.frame.getPhysReg(vregName);
+            if (vregPhys != "ax") {
+                Instruction286 movInst;
+                movInst.mnemonic = "mov";
+                movInst.operands.push_back("ax");
+                if (vregPhys.find("bp") != std::string::npos) {
+                    movInst.operands.push_back("[" + vregPhys + "]");
+                } else {
+                    movInst.operands.push_back(vregPhys);
+                }
+                lowered.instructions.push_back(movInst);
+            }
+
+            // Move constant to CX
+            Instruction286 movConst;
+            movConst.mnemonic = "mov";
+            movConst.operands.push_back("cx");
+            movConst.operands.push_back(constVal);
+            lowered.instructions.push_back(movConst);
+
+            // imul cx (one-operand form: AX * CX -> DX:AX, use AX for lower 16 bits)
+            Instruction286 imulInst;
+            imulInst.mnemonic = "imul";
+            imulInst.operands.push_back("cx");
+            lowered.instructions.push_back(imulInst);
+        } else if (irInst.operands.size() >= 2) {
+            // Neither operand is constant: existing logic
             std::string op1 = state.frame.getPhysReg(irInst.operands[0].name);
             std::string op2 = state.frame.getPhysReg(irInst.operands[1].name);
 
@@ -640,18 +691,21 @@ std::vector<LoweredInstruction> lowerMul(SelectorState& state,
                 lowered.instructions.push_back(movInst);
             }
 
-            // IMUL second operand
-            // If op2 is a stack slot (bp-relative), wrap in brackets and add size
+            // IMUL second operand (one-operand form: AX * op2 -> DX:AX)
+            Instruction286 imulInst;
+            imulInst.mnemonic = "imul";
             if (op2.find("bp+") != std::string::npos || op2.find("bp-") != std::string::npos) {
                 imulInst.operands.push_back("word [" + op2 + "]");
             } else {
                 imulInst.operands.push_back(op2);
             }
+            lowered.instructions.push_back(imulInst);
         } else {
+            Instruction286 imulInst;
+            imulInst.mnemonic = "imul";
             imulInst.operands.push_back("bx");
+            lowered.instructions.push_back(imulInst);
         }
-
-        lowered.instructions.push_back(imulInst);
 
         // Result is in AX (low word) and DX (high word)
         bool destIsMem = resultReg.find("bp") != std::string::npos;
@@ -789,7 +843,7 @@ std::vector<LoweredInstruction> lowerDivRem(SelectorState& state,
             // Division (SDiv/UDiv): DI:SI (DI=high, SI=low) = quotient
             // Remainder (SRem/URem): BX:AX (BX=high, AX=low) = remainder
             if (!irInst.resultName.empty()) {
-                std::string resultStack = state.frame.allocTemp(4, true);
+                std::string resultStack = state.frame.allocResultSlot(irInst.resultName, 4, true);
                 bool isRemainder = (irInst.opcode == ir::Opcode::SRem || irInst.opcode == ir::Opcode::URem);
 
                 if (isRemainder) {

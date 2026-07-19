@@ -7,7 +7,7 @@ extern memcpy
 extern memset
 extern memmove
 
-section .text
+segment _TEXT CLASS=CODE
 
 global llvm.memcpy.p0.i32
 global llvm.memcpy.p0.i64

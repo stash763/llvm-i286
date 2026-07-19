@@ -62,6 +62,40 @@ std::vector<LoweredInstruction> lowerStore(SelectorState& state,
         // Check if the pointer is an alloca result (ADDRESS, not VALUE)
         bool ptrIsAlloca = state.frame.isAlloca(ptrName);
 
+        // Check if the pointer is a global variable (e.g., @arg_array)
+        // Globals are in DGROUP (DS segment), use lea bx, [name] to get address
+        bool ptrIsGlobal = (!ptrName.empty() && ptrName[0] == '@');
+        std::string globalPtrName;
+        int64_t gepByteOffset = 0;
+        bool ptrIsGEP = false;
+        if (ptrIsGlobal) {
+            globalPtrName = ptrName.substr(1); // Remove @ prefix
+            if (!globalPtrName.empty() && globalPtrName[0] == '.') {
+                globalPtrName[0] = '_';
+            }
+            globalPtrName = safeNasmName(globalPtrName);
+        }
+
+        // Check if pointer is a GEP constant expression: getelementptr(...@global...)
+        if (!ptrName.empty() && ptrName.substr(0, 13) == "getelementptr") {
+            ptrIsGEP = true;
+            ptrIsGlobal = true;
+            // Extract global name from @name in the GEP expression
+            auto atPos = ptrName.find('@');
+            if (atPos != std::string::npos) {
+                auto commaPos = ptrName.find(',', atPos);
+                if (commaPos != std::string::npos) {
+                    globalPtrName = ptrName.substr(atPos + 1, commaPos - atPos - 1);
+                    if (!globalPtrName.empty() && globalPtrName[0] == '.') {
+                        globalPtrName[0] = '_';
+                    }
+                    globalPtrName = safeNasmName(globalPtrName);
+                }
+            }
+            // Compute byte offset
+            gepByteOffset = computeGEPByteOffset(ptrName, state.typeDefinitions);
+        }
+
         // Determine if pointer is SS-derived (pointers through SS-derived pointers)
         // SS-derived pointers need [ss:bx], DS-derived pointers need [bx]
         // Note: allocas are SS-derived for STORE but NOT for LOAD of pointer values
@@ -87,24 +121,34 @@ std::vector<LoweredInstruction> lowerStore(SelectorState& state,
 
         // Check if value is a constant (not a parameter or vreg)
         bool isConst = false;
+        std::string constVal = valName;
         if (!isRegOrParam) {
-            try {
-                std::stoi(valName);
+            if (valName == "null" || valName == "false") {
                 isConst = true;
-            } catch (...) {}
+                constVal = "0";
+            } else if (valName == "true") {
+                isConst = true;
+                constVal = "1";
+            } else {
+                try {
+                    std::stoi(valName);
+                    isConst = true;
+                    constVal = valName;
+                } catch (...) {}
+            }
         }
         
         // Check if value is a global variable reference (starts with @)
         bool isGlobal = (!valName.empty() && valName[0] == '@');
 
-        if (is32) {
+         if (is32) {
             // 32-bit store: store both low and high words
             // Move value to AX first (low word)
             if (isConst) {
                 Instruction286 movConst;
                 movConst.mnemonic = "mov";
                 movConst.operands.push_back("ax");
-                movConst.operands.push_back(valName);
+                movConst.operands.push_back(constVal);
                 lowered.instructions.push_back(movConst);
                 // High word is 0 for constants
                 Instruction286 xorDx;
@@ -218,7 +262,23 @@ std::vector<LoweredInstruction> lowerStore(SelectorState& state,
             // Determine segment override based on SS-derived status
             std::string segPrefix = ptrIsSS ? "ss:" : "";
             std::string dest;
-            if (ptrReg.find("bp") != std::string::npos && ptrIsAlloca) {
+            if (ptrIsGlobal) {
+                // Global pointer: use lea bx, [global_name] then add bx, offset
+                // (OMF fixup doesn't preserve constant displacement in lea)
+                Instruction286 loadAddr;
+                loadAddr.mnemonic = "lea";
+                loadAddr.operands.push_back("bx");
+                loadAddr.operands.push_back("[" + globalPtrName + "]");
+                lowered.instructions.push_back(loadAddr);
+                if (ptrIsGEP && gepByteOffset != 0) {
+                    Instruction286 addOff;
+                    addOff.mnemonic = "add";
+                    addOff.operands.push_back("bx");
+                    addOff.operands.push_back(std::to_string(gepByteOffset));
+                    lowered.instructions.push_back(addOff);
+                }
+                dest = "[bx]";
+            } else if (ptrReg.find("bp") != std::string::npos && ptrIsAlloca) {
                 // Alloca result: stack location IS the address (SS-derived)
                 dest = "[ss:" + ptrReg + "]";
             } else if (ptrReg.find("bp") != std::string::npos) {
@@ -243,19 +303,50 @@ std::vector<LoweredInstruction> lowerStore(SelectorState& state,
                     selectorAddr = ptrReg + "+2";
                 }
 
-                // Use [ss:bx] for SS-derived, [bx] for DS-derived
-                dest = "[" + segPrefix + "bx]";
+                // Load the pointer's segment into ES for far pointer dereference
+                Instruction286 loadSeg;
+                loadSeg.mnemonic = "mov";
+                loadSeg.operands.push_back("cx");
+                loadSeg.operands.push_back("[" + selectorAddr + "]");
+                lowered.instructions.push_back(loadSeg);
+                Instruction286 movEs;
+                movEs.mnemonic = "mov";
+                movEs.operands.push_back("es");
+                movEs.operands.push_back("cx");
+                lowered.instructions.push_back(movEs);
+
+                // Use ES:BX for the store
+                dest = "[es:bx]";
             } else {
-                // Register pointer - move to bx for addressing if needed
-                if (ptrReg != "bx" && ptrReg != "si" && ptrReg != "di") {
-                    Instruction286 movPtr;
-                    movPtr.mnemonic = "mov";
-                    movPtr.operands.push_back("bx");
-                    movPtr.operands.push_back(ptrReg);
-                    lowered.instructions.push_back(movPtr);
-                    dest = "[" + segPrefix + "bx]";
+                // Register pointer
+                if (!ptrIsAlloca) {
+                    // Non-alloca far pointer: offset in register, segment in DX
+                    // Move offset to bx, load ES from DX
+                    if (ptrReg != "bx" && ptrReg != "si" && ptrReg != "di") {
+                        Instruction286 movPtr;
+                        movPtr.mnemonic = "mov";
+                        movPtr.operands.push_back("bx");
+                        movPtr.operands.push_back(ptrReg);
+                        lowered.instructions.push_back(movPtr);
+                    }
+                    Instruction286 movEs;
+                    movEs.mnemonic = "mov";
+                    movEs.operands.push_back("es");
+                    movEs.operands.push_back("dx");
+                    lowered.instructions.push_back(movEs);
+                    dest = "[es:bx]";
                 } else {
-                    dest = "[" + segPrefix + ptrReg + "]";
+                    // Alloca/SS-derived: move to bx if needed
+                    if (ptrReg != "bx" && ptrReg != "si" && ptrReg != "di") {
+                        Instruction286 movPtr;
+                        movPtr.mnemonic = "mov";
+                        movPtr.operands.push_back("bx");
+                        movPtr.operands.push_back(ptrReg);
+                        lowered.instructions.push_back(movPtr);
+                        dest = "[" + segPrefix + "bx]";
+                    } else {
+                        dest = "[" + segPrefix + ptrReg + "]";
+                    }
                 }
             }
 
@@ -270,7 +361,10 @@ std::vector<LoweredInstruction> lowerStore(SelectorState& state,
             // Need to calculate the offset properly
             Instruction286 storeHigh;
             storeHigh.mnemonic = "mov";
-            if (ptrIsAlloca && ptrReg.find("bp") != std::string::npos) {
+            if (ptrIsGlobal) {
+                // Global: use bx+2 (bx was set to global address via lea above)
+                storeHigh.operands.push_back("[bx+2]");
+            } else if (ptrIsAlloca && ptrReg.find("bp") != std::string::npos) {
                 // Alloca: stack location IS the address (SS-derived)
                 int offset = 0;
                 std::string offsetStr = ptrReg.substr(2); // Remove "bp"
@@ -281,10 +375,13 @@ std::vector<LoweredInstruction> lowerStore(SelectorState& state,
                 std::string offsetStr2 = (newOffset >= 0) ? ("+" + std::to_string(newOffset)) : std::to_string(newOffset);
                 storeHigh.operands.push_back("[" + std::string("ss:bp") + offsetStr2 + "]");
             } else if (ptrReg.find("bp") != std::string::npos) {
-                // Non-alloca: use bx+2 with segment override
-                storeHigh.operands.push_back("[" + segPrefix + std::string("bx+2") + "]");
+                // Non-alloca bp: use es:bx+2 (ES was loaded above)
+                storeHigh.operands.push_back("[es:bx+2]");
+            } else if (!ptrIsAlloca) {
+                // Non-alloca register pointer: use es:bx+2 (ES was loaded above)
+                storeHigh.operands.push_back("[es:bx+2]");
             } else {
-                // Register pointer - use bx+2 (ptrReg was already moved to bx above)
+                // Alloca register pointer - use bx+2 with segment override
                 storeHigh.operands.push_back("[" + segPrefix + std::string("bx+2") + "]");
             }
             storeHigh.operands.push_back("dx");
@@ -302,7 +399,7 @@ std::vector<LoweredInstruction> lowerStore(SelectorState& state,
                 Instruction286 movConst;
                 movConst.mnemonic = "mov";
                 movConst.operands.push_back("ax");
-                movConst.operands.push_back(valName);
+                movConst.operands.push_back(constVal);
                 lowered.instructions.push_back(movConst);
             } else if (valReg != "ax") {
                 Instruction286 movInst;
@@ -321,7 +418,23 @@ std::vector<LoweredInstruction> lowerStore(SelectorState& state,
             // Determine segment override based on SS-derived status
             std::string segPrefix = ptrIsSS ? "ss:" : "";
             std::string dest;
-            if (ptrReg.find("bp") != std::string::npos && ptrIsAlloca) {
+            if (ptrIsGlobal) {
+                // Global pointer: use lea bx, [global_name] then add bx, offset
+                // (OMF fixup doesn't preserve constant displacement in lea)
+                Instruction286 loadAddr;
+                loadAddr.mnemonic = "lea";
+                loadAddr.operands.push_back("bx");
+                loadAddr.operands.push_back("[" + globalPtrName + "]");
+                lowered.instructions.push_back(loadAddr);
+                if (ptrIsGEP && gepByteOffset != 0) {
+                    Instruction286 addOff;
+                    addOff.mnemonic = "add";
+                    addOff.operands.push_back("bx");
+                    addOff.operands.push_back(std::to_string(gepByteOffset));
+                    lowered.instructions.push_back(addOff);
+                }
+                dest = "[bx]";
+            } else if (ptrReg.find("bp") != std::string::npos && ptrIsAlloca) {
                 // Alloca result: stack location IS the address (SS-derived)
                 dest = "[ss:" + ptrReg + "]";
             } else if (ptrReg.find("bp") != std::string::npos) {
@@ -346,19 +459,49 @@ std::vector<LoweredInstruction> lowerStore(SelectorState& state,
                     selectorAddr = ptrReg + "+2";
                 }
 
-                // Use [ss:bx] for SS-derived, [bx] for DS-derived
-                dest = "[" + segPrefix + "bx]";
+                // Load the pointer's segment into ES for far pointer store
+                Instruction286 loadSeg;
+                loadSeg.mnemonic = "mov";
+                loadSeg.operands.push_back("cx");
+                loadSeg.operands.push_back("[" + selectorAddr + "]");
+                lowered.instructions.push_back(loadSeg);
+                Instruction286 movEs;
+                movEs.mnemonic = "mov";
+                movEs.operands.push_back("es");
+                movEs.operands.push_back("cx");
+                lowered.instructions.push_back(movEs);
+
+                // Use ES:BX for the store
+                dest = "[es:bx]";
             } else {
-                // Register pointer - move to bx for addressing if needed
-                if (ptrReg != "bx" && ptrReg != "si" && ptrReg != "di") {
-                    Instruction286 movPtr;
-                    movPtr.mnemonic = "mov";
-                    movPtr.operands.push_back("bx");
-                    movPtr.operands.push_back(ptrReg);
-                    lowered.instructions.push_back(movPtr);
-                    dest = "[" + segPrefix + "bx]";
+                // Register pointer
+                if (!ptrIsAlloca) {
+                    // Non-alloca far pointer: offset in register, segment in DX
+                    if (ptrReg != "bx" && ptrReg != "si" && ptrReg != "di") {
+                        Instruction286 movPtr;
+                        movPtr.mnemonic = "mov";
+                        movPtr.operands.push_back("bx");
+                        movPtr.operands.push_back(ptrReg);
+                        lowered.instructions.push_back(movPtr);
+                    }
+                    Instruction286 movEs;
+                    movEs.mnemonic = "mov";
+                    movEs.operands.push_back("es");
+                    movEs.operands.push_back("dx");
+                    lowered.instructions.push_back(movEs);
+                    dest = "[es:bx]";
                 } else {
-                    dest = "[" + segPrefix + ptrReg + "]";
+                    // Alloca/SS-derived: move to bx if needed
+                    if (ptrReg != "bx" && ptrReg != "si" && ptrReg != "di") {
+                        Instruction286 movPtr;
+                        movPtr.mnemonic = "mov";
+                        movPtr.operands.push_back("bx");
+                        movPtr.operands.push_back(ptrReg);
+                        lowered.instructions.push_back(movPtr);
+                        dest = "[" + segPrefix + "bx]";
+                    } else {
+                        dest = "[" + segPrefix + ptrReg + "]";
+                    }
                 }
             }
 
@@ -399,15 +542,16 @@ std::vector<LoweredInstruction> lowerLoad(SelectorState& state,
                 if (!globalName.empty() && globalName[0] == '.') {
                     globalName[0] = '_';
                 }
+                // Mangle NASM reserved words
+                globalName = safeNasmName(globalName);
             
             // Get result stack location
             std::string resultStack = state.frame.getPhysReg(irInst.resultName);
             if (resultStack == "ax" || resultStack == "bx" || resultStack == "cx" || resultStack == "dx") {
                 // Result is not on stack - allocate temp space
-                std::string tempSlot = state.frame.allocTemp(4, true);
-                resultStack = tempSlot;
+                resultStack = state.frame.allocResultSlot(irInst.resultName, 4, true);
             }
-            
+
             // Load address of global into BX
             Instruction286 leaAddr;
             leaAddr.mnemonic = "lea";
@@ -495,24 +639,45 @@ std::vector<LoweredInstruction> lowerLoad(SelectorState& state,
                 // For non-alloca pointers, we need to load the pointer VALUE first,
                 // then use that value as the address to load from
                 std::string actualAddr = stackLoc;
+                bool useEsPrefix = false;
                 if (!ptrIsAlloca) {
-                    // Load the 16-bit address to BX for dereferencing
+                    // Load the far pointer: offset into bx, segment into es
                     if (stackLoc.find("bp") != std::string::npos) {
-                        // Pointer is at a stack location
+                        // Pointer is at a stack location (parameter or local)
+                        // Load offset into bx
                         Instruction286 loadAddr;
                         loadAddr.mnemonic = "mov";
                         loadAddr.operands.push_back("bx");
                         loadAddr.operands.push_back("[" + stackLoc + "]");
                         lowered.instructions.push_back(loadAddr);
+                        // Load segment (high word) into ES for far pointer dereference
+                        std::string highLoc = state.frame.getHighBpOffset(stackLoc);
+                        Instruction286 loadSeg;
+                        loadSeg.mnemonic = "mov";
+                        loadSeg.operands.push_back("cx");
+                        loadSeg.operands.push_back("[" + highLoc + "]");
+                        lowered.instructions.push_back(loadSeg);
+                        Instruction286 movEs;
+                        movEs.mnemonic = "mov";
+                        movEs.operands.push_back("es");
+                        movEs.operands.push_back("cx");
+                        lowered.instructions.push_back(movEs);
                     } else {
-                        // Pointer is in a register - move to bx
+                        // Pointer is in a register - move offset to bx
                         Instruction286 movAddr;
                         movAddr.mnemonic = "mov";
                         movAddr.operands.push_back("bx");
                         movAddr.operands.push_back(stackLoc);
                         lowered.instructions.push_back(movAddr);
+                        // Segment is in DX (high word) - load into ES
+                        Instruction286 movEs;
+                        movEs.mnemonic = "mov";
+                        movEs.operands.push_back("es");
+                        movEs.operands.push_back("dx");
+                        lowered.instructions.push_back(movEs);
                     }
                     actualAddr = "bx";
+                    useEsPrefix = true;
                 }
 
                // Get result stack location
@@ -520,8 +685,7 @@ std::vector<LoweredInstruction> lowerLoad(SelectorState& state,
                 std::string resultStack = state.frame.getPhysReg(irInst.resultName);
                 if (resultStack == "ax" || resultStack == "bx" || resultStack == "cx" || resultStack == "dx") {
                     // Result is not on stack - allocate temp space (pre-allocated in prologue)
-                    std::string tempSlot = state.frame.allocTemp(4, true);
-                    resultStack = tempSlot;
+                    resultStack = state.frame.allocResultSlot(irInst.resultName, 4, true);
                     // NOTE: No sub sp emitted - temp space is pre-allocated
                 }
 
@@ -529,7 +693,7 @@ std::vector<LoweredInstruction> lowerLoad(SelectorState& state,
                 // Note: allocas are SS-derived for STORE but NOT for LOAD of pointer values
                 // We only track SS-derived status for POINTER VALUES, not for slots
                 bool ptrIsSS = state.ssDerivedPtrVregs.count(irInst.operands[0].name) > 0;
-                std::string segPrefix = ptrIsSS ? "ss:" : "";
+                std::string segPrefix = useEsPrefix ? "es:" : (ptrIsSS ? "ss:" : "");
 
                 // Load low word from [actualAddr] into AX
                 Instruction286 loadLow;
@@ -613,8 +777,8 @@ std::vector<LoweredInstruction> lowerLoad(SelectorState& state,
                     destReg = state.frame.getPhysReg(irInst.resultName);
                 }
 
-           // For non-alloca pointers, load the address to BX for dereferencing
-       // Determine if pointer is SS-derived (pointers through SS-derived pointers)
+      // For non-alloca pointers, load the address to BX for dereferencing
+        // Determine if pointer is SS-derived (pointers through SS-derived pointers)
         // SS-derived pointers need [ss:bx], DS-derived pointers need [bx]
         // Note: allocas are SS-derived for both STORE and LOAD (they are stack locations)
         // Note: params are NOT SS-derived because the pointer VALUE could point to DS or SS
@@ -624,21 +788,72 @@ std::vector<LoweredInstruction> lowerLoad(SelectorState& state,
         if (ptrIsAlloca) {
             ptrIsSS = state.frame.isSSDerived(ptrName);
         }
+        bool useEsPrefix16 = false;
         if (!ptrIsAlloca) {
-                Instruction286 loadAddr;
-                loadAddr.mnemonic = "mov";
-                loadAddr.operands.push_back("bx");
-                // In 16-bit mode, only bx/si/di/bp can be base registers.
-                // If ptrReg is ax/cx/dx, move it to bx first instead of trying to dereference it.
-                if (ptrReg == "ax" || ptrReg == "cx" || ptrReg == "dx") {
-                    loadAddr.operands.push_back(ptrReg);
-                } else {
+                // Load the far pointer: offset into bx, segment into ES
+                if (ptrReg.find("bp") != std::string::npos) {
+                    // Pointer is at a stack location (parameter or local)
+                    Instruction286 loadAddr;
+                    loadAddr.mnemonic = "mov";
+                    loadAddr.operands.push_back("bx");
                     loadAddr.operands.push_back("[" + ptrReg + "]");
-                }
-                lowered.instructions.push_back(loadAddr);
+                    lowered.instructions.push_back(loadAddr);
+                    // Load segment (high word) into ES for far pointer dereference
+                    std::string highLoc = state.frame.getHighBpOffset(ptrReg);
+                    Instruction286 loadSeg;
+                    loadSeg.mnemonic = "mov";
+                    loadSeg.operands.push_back("cx");
+                    loadSeg.operands.push_back("[" + highLoc + "]");
+                    lowered.instructions.push_back(loadSeg);
+                    Instruction286 movEs;
+                    movEs.mnemonic = "mov";
+                    movEs.operands.push_back("es");
+                    movEs.operands.push_back("cx");
+                    lowered.instructions.push_back(movEs);
+                } else {
+                    // Pointer is in a register - move offset to bx, segment to ES
+                    Instruction286 loadAddr;
+                    loadAddr.mnemonic = "mov";
+                    loadAddr.operands.push_back("bx");
+                    if (ptrReg == "ax" || ptrReg == "cx" || ptrReg == "dx") {
+                        loadAddr.operands.push_back(ptrReg);
+                    } else {
+                        loadAddr.operands.push_back("[" + ptrReg + "]");
+                    }
+                    lowered.instructions.push_back(loadAddr);
+                    // Segment is in DX (high word) - load into ES
+                    Instruction286 movEs;
+                    movEs.mnemonic = "mov";
+                    movEs.operands.push_back("es");
+                    movEs.operands.push_back("dx");
+                    lowered.instructions.push_back(movEs);
 
-                // Load from [ss:bx] for SS-derived pointers, [bx] for DS-derived
-                std::string derefBase = ptrIsSS ? "[ss:bx]" : "[bx]";
+                    // Save the far pointer to a stack temp so subsequent operations
+                    // (GEP, etc.) can retrieve it after ax/dx are clobbered by the load
+                    std::string ptrTemp = state.frame.allocTemp(4, true);
+                    Instruction286 saveLow;
+                    saveLow.mnemonic = "mov";
+                    saveLow.operands.push_back("[" + ptrTemp + "]");
+                    saveLow.operands.push_back("bx");
+                    lowered.instructions.push_back(saveLow);
+                    Instruction286 saveHigh;
+                    saveHigh.mnemonic = "mov";
+                    saveHigh.operands.push_back("[" + ptrTemp + "+2]");
+                    saveHigh.operands.push_back("dx");
+                    lowered.instructions.push_back(saveHigh);
+                    // Update vreg mapping so future accesses use the stack temp
+                    state.frame.setPhysReg(ptrName, ptrTemp);
+                    // 32-bit marking already done by allocTemp(4, true)
+                }
+                useEsPrefix16 = true;
+
+                // Load from [es:bx] for far pointers, [ss:bx] for SS-derived, [bx] for DS-derived
+                std::string derefBase;
+                if (useEsPrefix16) {
+                    derefBase = "[es:bx]";
+                } else {
+                    derefBase = ptrIsSS ? "[ss:bx]" : "[bx]";
+                }
 
                 // Load from [bx] into destReg (or AX then store to stack for 8-bit)
                 if (is8) {
@@ -656,12 +871,11 @@ std::vector<LoweredInstruction> lowerLoad(SelectorState& state,
                     zeroExt.operands.push_back("0");
                     lowered.instructions.push_back(zeroExt);
 
-                        // Store AX to stack location for the result vreg
+                       // Store AX to stack location for the result vreg
                         std::string resultStack = state.frame.getPhysReg(irInst.resultName);
                         if (resultStack == "ax" || resultStack == "bx" || resultStack == "cx" || resultStack == "dx") {
                             // Result is not on stack - allocate temp space (pre-allocated in prologue)
-                            std::string tempSlot = state.frame.allocTemp(2, false);
-                            resultStack = tempSlot;
+                            resultStack = state.frame.allocResultSlot(irInst.resultName, 2, false);
                             // NOTE: No sub sp - temp space is pre-allocated
                         }
                         // Store AX to result stack location
@@ -672,8 +886,8 @@ std::vector<LoweredInstruction> lowerLoad(SelectorState& state,
                         lowered.instructions.push_back(storeResult);
 
                         // Update vreg mapping to point to stack
-                        
-                       } else {
+
+                        } else {
                         // 16-bit load
                         // If destReg is a memory location, load to ax first then store
                         if (destReg.find("bp") != std::string::npos) {
@@ -735,8 +949,7 @@ std::vector<LoweredInstruction> lowerLoad(SelectorState& state,
                         std::string resultStack = state.frame.getPhysReg(irInst.resultName);
                         if (resultStack == "ax" || resultStack == "bx" || resultStack == "cx" || resultStack == "dx") {
                             // Result is not on stack - allocate temp space (pre-allocated in prologue)
-                            std::string tempSlot2 = state.frame.allocTemp(2, false);
-                            resultStack = tempSlot2;
+                            resultStack = state.frame.allocResultSlot(irInst.resultName, 2, false);
                             // NOTE: No sub sp - temp space is pre-allocated
                         }
                         // Store AX to result stack location
@@ -746,8 +959,7 @@ std::vector<LoweredInstruction> lowerLoad(SelectorState& state,
                         storeResult.operands.push_back("ax");
                         lowered.instructions.push_back(storeResult);
 
-                        // Update vreg mapping to point to stack
-                        
+                        // Update vreg mapping to point to stack  
                     } else {
                         // 16-bit load
                         // If destReg is a memory location, load to ax first then store
@@ -788,58 +1000,103 @@ std::vector<LoweredInstruction> lowerLoad(SelectorState& state,
             // We only track SS-derived status for POINTER VALUES, not for slots
             bool ptrIsSS = state.ssDerivedPtrVregs.count(irInst.operands[0].name) > 0;
             std::string segPrefix = ptrIsSS ? "ss:" : "";
-            if (is32) {
-                // Move pointer to bx
+
+            // For non-alloca register pointers, the pointer is a 32-bit far pointer
+            // offset in register (e.g. ax), segment in dx
+            // Need to: load ES from dx, move offset to bx, use [es:bx] for dereference
+            bool useEsForRegPtr = !ptrIsAlloca;
+            std::string regDerefPrefix = useEsForRegPtr ? "es:" : segPrefix;
+
+            if (useEsForRegPtr) {
+                // Move offset to bx
                 Instruction286 movPtr;
                 movPtr.mnemonic = "mov";
                 movPtr.operands.push_back("bx");
                 movPtr.operands.push_back(ptrReg);
                 lowered.instructions.push_back(movPtr);
-                
-                // Load low word from [ss:bx] or [bx] depending on SS-derived status
+                // Load segment from dx into ES
+                Instruction286 movEs;
+                movEs.mnemonic = "mov";
+                movEs.operands.push_back("es");
+                movEs.operands.push_back("dx");
+                lowered.instructions.push_back(movEs);
+
+                // Save the far pointer to a stack temp so subsequent operations
+                // (GEP, etc.) can retrieve it after ax/dx are clobbered
+                std::string ptrTemp = state.frame.allocTemp(4, true);
+                Instruction286 saveLow;
+                saveLow.mnemonic = "mov";
+                saveLow.operands.push_back("[" + ptrTemp + "]");
+                saveLow.operands.push_back("bx");
+                lowered.instructions.push_back(saveLow);
+                Instruction286 saveHigh;
+                saveHigh.mnemonic = "mov";
+                saveHigh.operands.push_back("[" + ptrTemp + "+2]");
+                saveHigh.operands.push_back("dx");
+                lowered.instructions.push_back(saveHigh);
+                // Update vreg mapping so future accesses use the stack temp
+                state.frame.setPhysReg(ptrName, ptrTemp);
+            }
+
+            if (is32) {
+                if (!useEsForRegPtr) {
+                    // Alloca/SS-derived: move pointer to bx
+                    Instruction286 movPtr;
+                    movPtr.mnemonic = "mov";
+                    movPtr.operands.push_back("bx");
+                    movPtr.operands.push_back(ptrReg);
+                    lowered.instructions.push_back(movPtr);
+                }
+
+                // Load low word from [es:bx] or [ss:bx] or [bx]
                 Instruction286 loadLow;
                 loadLow.mnemonic = "mov";
                 loadLow.operands.push_back("ax");
-                loadLow.operands.push_back("[" + segPrefix + "bx]");
+                loadLow.operands.push_back("[" + regDerefPrefix + "bx]");
                 lowered.instructions.push_back(loadLow);
-                
-                // Load high word from [ss:bx+2] or [bx+2]
+
+                // Load high word from [es:bx+2] or [ss:bx+2] or [bx+2]
                 Instruction286 loadHigh;
                 loadHigh.mnemonic = "mov";
                 loadHigh.operands.push_back("dx");
-                loadHigh.operands.push_back("[" + segPrefix + "bx+2]");
+                loadHigh.operands.push_back("[" + regDerefPrefix + "bx+2]");
                 lowered.instructions.push_back(loadHigh);
-                
+
                 // Store to result stack location
                 std::string resultStack = state.frame.getPhysReg(irInst.resultName);
                 if (resultStack == "ax" || resultStack == "bx" || resultStack == "cx" || resultStack == "dx") {
-                    resultStack = state.frame.allocTemp(4, true);
+                    resultStack = state.frame.allocResultSlot(irInst.resultName, 4, true);
                 }
                 Instruction286 storeLow;
                 storeLow.mnemonic = "mov";
                 storeLow.operands.push_back("[" + resultStack + "]");
                 storeLow.operands.push_back("ax");
                 lowered.instructions.push_back(storeLow);
-                
+
                 std::string highOffset = state.frame.getHighBpOffset(resultStack);
                 Instruction286 storeHigh;
                 storeHigh.mnemonic = "mov";
                 storeHigh.operands.push_back("[" + highOffset + "]");
                 storeHigh.operands.push_back("dx");
                 lowered.instructions.push_back(storeHigh);
-                
+
                 state.frame.setPhysReg(irInst.resultName, resultStack);
             } else {
                 // 16-bit or 8-bit load from pointer in register
+                // Pointer setup (move to bx, load ES, save to temp) already done above
                 bool is8 = irInst.resultType && irInst.resultType->bitWidth == 8;
-                
-                // Move pointer to bx
-                Instruction286 movPtr;
-                movPtr.mnemonic = "mov";
-                movPtr.operands.push_back("bx");
-                movPtr.operands.push_back(ptrReg);
-                lowered.instructions.push_back(movPtr);
-                
+
+                // If not useEsForRegPtr, we need to move pointer to bx for alloca/SS-derived
+                if (!useEsForRegPtr) {
+                    Instruction286 movPtr;
+                    movPtr.mnemonic = "mov";
+                    movPtr.operands.push_back("bx");
+                    movPtr.operands.push_back(ptrReg);
+                    lowered.instructions.push_back(movPtr);
+                }
+
+                std::string derefBase = useEsForRegPtr ? "[es:bx]" : ("[" + segPrefix + "bx]");
+
                 std::string destReg;
                 if (is8) {
                     destReg = "ax";
@@ -848,18 +1105,18 @@ std::vector<LoweredInstruction> lowerLoad(SelectorState& state,
                     destReg = state.frame.getFreeTempReg();
                     state.frame.setPhysReg(irInst.resultName, destReg);
                 }
-                
+
                 Instruction286 loadInst;
                 loadInst.mnemonic = "mov";
                 if (is8) {
                     // 8-bit load: use AL destination
                     loadInst.operands.push_back("al");
-                    loadInst.operands.push_back("byte [" + segPrefix + "bx]");
+                    loadInst.operands.push_back("byte " + derefBase);
                     lowered.instructions.push_back(loadInst);
                 } else if (destReg.find("bp") != std::string::npos) {
                     // destReg is memory - load to ax first, then store
                     loadInst.operands.push_back("ax");
-                    loadInst.operands.push_back("[" + segPrefix + "bx]");
+                    loadInst.operands.push_back(derefBase);
                     lowered.instructions.push_back(loadInst);
                     Instruction286 storeResult;
                     storeResult.mnemonic = "mov";
@@ -868,8 +1125,28 @@ std::vector<LoweredInstruction> lowerLoad(SelectorState& state,
                     lowered.instructions.push_back(storeResult);
                 } else {
                     loadInst.operands.push_back(destReg);
-                    loadInst.operands.push_back("[" + segPrefix + "bx]");
+                    loadInst.operands.push_back(derefBase);
                     lowered.instructions.push_back(loadInst);
+                }
+
+                if (is8) {
+                    // Zero-extend: set AH to 0
+                    Instruction286 zeroExt;
+                    zeroExt.mnemonic = "mov";
+                    zeroExt.operands.push_back("ah");
+                    zeroExt.operands.push_back("0");
+                    lowered.instructions.push_back(zeroExt);
+
+                    // Store AX to stack location for the result vreg
+                    std::string resultStack = state.frame.getPhysReg(irInst.resultName);
+                    if (resultStack == "ax" || resultStack == "bx" || resultStack == "cx" || resultStack == "dx") {
+                        resultStack = state.frame.allocResultSlot(irInst.resultName, 2, false);
+                    }
+                    Instruction286 storeResult;
+                    storeResult.mnemonic = "mov";
+                    storeResult.operands.push_back("[" + resultStack + "]");
+                    storeResult.operands.push_back("ax");
+                    lowered.instructions.push_back(storeResult);
                 }
             }
         }
@@ -914,6 +1191,10 @@ std::vector<LoweredInstruction> lowerGetElementPtr(SelectorState& state,
             if (irInst.resultType->elementType &&
                 irInst.resultType->elementType->isInteger()) {
                 elemSize = irInst.resultType->elementType->getBitWidth() / 8;
+            } else if (irInst.resultType->elementType &&
+                       irInst.resultType->elementType->isPointer()) {
+                // Pointer elements are 32-bit on i286 (selector:offset)
+                elemSize = 4;
             }
             // If elementType is void (opaque pointer), elemSize stays 1
         }
@@ -923,7 +1204,29 @@ std::vector<LoweredInstruction> lowerGetElementPtr(SelectorState& state,
             // Check if base is an alloca result (address IS the stack offset, not a value at it)
             bool baseIsAlloca = state.frame.isAlloca(irInst.operands[0].name);
 
-              if (baseIsAlloca && baseReg.find("bp") != std::string::npos) {
+            // Check if base is a global variable (@name)
+            const std::string& baseName = irInst.operands[0].name;
+            bool baseIsGlobal = (!baseName.empty() && baseName[0] == '@');
+
+            if (baseIsGlobal) {
+                // Global base: load address via lea, segment via ds
+                std::string globalName = baseName.substr(1);
+                if (!globalName.empty() && globalName[0] == '.')
+                    globalName = "_" + globalName.substr(1);
+                globalName = safeNasmName(globalName);
+
+                Instruction286 leaLow;
+                leaLow.mnemonic = "lea";
+                leaLow.operands.push_back("ax");
+                leaLow.operands.push_back("[" + globalName + "]");
+                lowered.instructions.push_back(leaLow);
+
+                Instruction286 movSeg;
+                movSeg.mnemonic = "mov";
+                movSeg.operands.push_back("dx");
+                movSeg.operands.push_back("ds");
+                lowered.instructions.push_back(movSeg);
+            } else if (baseIsAlloca && baseReg.find("bp") != std::string::npos) {
                 // For alloca results: use lea to get the address (stack offset IS the address)
                 Instruction286 leaLow;
                 leaLow.mnemonic = "lea";
@@ -1062,9 +1365,8 @@ std::vector<LoweredInstruction> lowerGetElementPtr(SelectorState& state,
 
             // Store result to 32-bit stack slot
             if (!irInst.resultName.empty()) {
-                // Allocate 32-bit stack slot for result (pre-allocated in prologue)
-                std::string tempSlot3 = state.frame.allocTemp(4, true);
-                std::string resultStack = tempSlot3;
+                // Use spill slot if available (cross-block vreg), else temp slot
+                std::string resultStack = state.frame.allocResultSlot(irInst.resultName, 4, true);
 
                 // Store low word
                 Instruction286 storeLow;

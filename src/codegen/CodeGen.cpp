@@ -61,11 +61,18 @@ std::string CodeGen::generate(const ir::Module& module) {
     // Helper/library modules (without main) should not emit a start label,
     // so they can be linked alongside a main module.
     std::string entryFuncName;
+    bool hasMain = false;
     for (const auto& func : module.functions) {
         if (!func->isDeclaration && func->name == "main") {
-            entryFuncName = "main";
+            hasMain = true;
             break;
         }
+    }
+    // If this module has main, the entry point should call _start (from crt1.o)
+    // which calls _start_c -> __libc_start_main -> __init_libc -> main
+    // This ensures libc is properly initialized before main runs
+    if (hasMain) {
+        entryFuncName = "_start";
     }
     
     // Collect external function declarations
@@ -102,9 +109,18 @@ std::string CodeGen::generate(const ir::Module& module) {
     
     // Collect external global declarations (declared but not defined in this module)
     std::vector<std::string> externGlobals;
+    std::vector<std::string> definedGlobals;
     for (const auto& gv : module.globals) {
         if (gv->linkage == "external") {
             externGlobals.push_back(gv->name);
+        } else {
+            // This global is defined here - export it for linking
+            std::string dataLabel = gv->name;
+            if (!dataLabel.empty() && dataLabel[0] == '.') {
+                dataLabel = "_" + dataLabel.substr(1);
+            }
+            dataLabel = safeNasmName(dataLabel);
+            definedGlobals.push_back(dataLabel);
         }
     }
 
@@ -123,8 +139,35 @@ std::string CodeGen::generate(const ir::Module& module) {
             
             // Emit function with full prologue/epilogue
             int frameSize = selector.getFrameSize();
-            allFunctions += emitter.emitFunction(lowered, func->name, frameSize);
+            allFunctions += emitter.emitFunction(lowered, func->name, frameSize, func->linkage);
             allFunctions += "\n";
+        }
+    }
+    
+    // Emit module-level inline assembly (e.g., _start from crt1.c)
+    // These are raw assembly strings that need NASM syntax translation
+    for (const auto& asmStr : module.moduleAsmStrings) {
+        std::string line = asmStr;
+        // Translate GAS syntax to NASM syntax
+        // .global -> global
+        if (line.find(".global") == 0) {
+            line = "global" + line.substr(7);
+        }
+        // .text etc are segment directives we skip (we use our own segment layout)
+        if (line.find(".text") == 0 || line.find(".data") == 0 || line.find(".bss") == 0) {
+            continue;
+        }
+        // call _start_c -> call far _start_c (far calling convention)
+        if (line.find("call _start_c") != std::string::npos) {
+            line = "  call far _start_c";
+        }
+        // Skip empty/whitespace-only lines
+        bool hasContent = false;
+        for (char c : line) {
+            if (c != ' ' && c != '\t') { hasContent = true; break; }
+        }
+        if (hasContent) {
+            allFunctions += line + "\n";
         }
     }
     
@@ -159,6 +202,17 @@ std::string CodeGen::generate(const ir::Module& module) {
                     if (byteSize < 2) byteSize = 2; // Minimum 2 bytes
                 } else if (gv->type->isPointer()) {
                     byteSize = 4; // 32-bit pointer
+                } else if (gv->type->kind == ir::TypeKind::Array) {
+                    // Array: numElements * elementSize
+                    int elemSize = 4; // Default for pointer arrays
+                    if (gv->type->elementType) {
+                        if (gv->type->elementType->isInteger()) {
+                            elemSize = gv->type->elementType->bitWidth / 8;
+                        } else if (gv->type->elementType->isPointer()) {
+                            elemSize = 4;
+                        }
+                    }
+                    byteSize = gv->type->numElements * elemSize;
                 }
             }
             
@@ -297,7 +351,12 @@ std::string CodeGen::generate(const ir::Module& module) {
                                 // Trim trailing whitespace/comma
                                 size_t end = refName.find_first_of(" \t,}");
                                 if (end != std::string::npos) refName = refName.substr(0, end);
-                                
+                                // Convert .name to _name for NASM compatibility
+                                if (!refName.empty() && refName[0] == '.') {
+                                    refName = "_" + refName.substr(1);
+                                }
+                                refName = safeNasmName(refName);
+
                                 dataSegment += "\tdw " + refName + "\n";
                                 dataSegment += "\tdw seg " + refName + "\n";
                             } else if (trimmed.find("zeroinitializer") != std::string::npos || 
@@ -481,6 +540,11 @@ std::string CodeGen::generate(const ir::Module& module) {
     externFuncs.push_back("_DivideI32");
     externFuncs.push_back("_DivideU32");
     
+    // If entry point is _start, it's defined in crt1.o (not this module)
+    if (!entryFuncName.empty() && entryFuncName == "_start") {
+        externFuncs.push_back("_start");
+    }
+    
     // Wrap in module structure
     return emitter.emitModule(
         module.sourceFilename.empty() ? "output" : module.sourceFilename,
@@ -489,7 +553,8 @@ std::string CodeGen::generate(const ir::Module& module) {
         bssSegment, // bss segment
         entryFuncName,
         externFuncs,
-        externGlobals
+        externGlobals,
+        definedGlobals
     );
 }
 

@@ -197,6 +197,10 @@ struct Instruction {
     std::vector<std::string> callArgs;
     // Track whether each call arg is a pointer (true) or value (false)
     std::vector<bool> callArgKinds; // true = pointer, false = value
+    
+    // For inline asm call (asm "", "=r,0,..."(@function))
+    // Used to load a function address into a register without actually calling
+    bool isInlineAsm = false;
 };
 
 struct BasicBlock {
@@ -241,6 +245,7 @@ struct Module {
     std::vector<std::unique_ptr<GlobalVariable>> globals;
     std::map<std::string, std::unique_ptr<Type>> typeDefinitions;
     std::map<std::string, std::string> aliases; // alias name -> target name
+    std::vector<std::string> moduleAsmStrings; // raw inline assembly strings
 };
 
 } // namespace ir

@@ -186,6 +186,17 @@ std::unique_ptr<Module> IrVisitor::visitModule(LLVMIRParser::CompilationUnitCont
                 auto type = parseType(td->type());
                 currentModule->typeDefinitions[typeName] = std::move(type);
             }
+        } else if (entity->moduleAsm()) {
+            // Handle module asm: collect raw assembly strings
+            auto* ma = entity->moduleAsm();
+            if (ma->StringLit()) {
+                std::string asmStr = ma->StringLit()->getText();
+                // Strip surrounding quotes
+                if (asmStr.size() >= 2 && asmStr.front() == '"' && asmStr.back() == '"') {
+                    asmStr = asmStr.substr(1, asmStr.size() - 2);
+                }
+                currentModule->moduleAsmStrings.push_back(asmStr);
+            }
         }
     }
     
@@ -886,11 +897,17 @@ std::unique_ptr<Instruction> IrVisitor::parseInstruction(LLVMIRParser::ValueInst
         
         // Parse callee name
         if (callCtx->value()) {
-            std::string calleeText = callCtx->value()->getText();
-            if (!calleeText.empty() && calleeText[0] == '@') {
-                calleeText = calleeText.substr(1); // Remove @ prefix
+            // Check if callee is an inline asm expression
+            if (callCtx->value()->inlineAsm()) {
+                // Inline asm - will be resolved after args are parsed
+                // (need to check if first arg is @global for load-address pattern)
+            } else {
+                std::string calleeText = callCtx->value()->getText();
+                if (!calleeText.empty() && calleeText[0] == '@') {
+                    calleeText = calleeText.substr(1); // Remove @ prefix
+                }
+                inst->calleeName = calleeText;
             }
-            inst->calleeName = calleeText;
         }
         
         // Parse result name (from the localDef that wraps this instruction)
@@ -904,11 +921,8 @@ std::unique_ptr<Instruction> IrVisitor::parseInstruction(LLVMIRParser::ValueInst
             for (auto *arg : argVec) {
                 if (arg->value()) {
                     std::string argText = arg->value()->getText();
-                    if (!argText.empty() && argText[0] == '@') {
-                        argText = argText.substr(1); // Remove @ prefix for globals
-                    }
-                    // Preserve % prefix for vreg references so we can distinguish
-                    // vreg names (like "%4") from constants (like "4")
+                    // Preserve @ and % prefixes so CallOps can distinguish
+                    // globals (@), vregs (%), and constants (numeric)
                     inst->callArgs.push_back(argText);
                     
                     // Track whether this argument is a pointer type
@@ -918,6 +932,24 @@ std::unique_ptr<Instruction> IrVisitor::parseInstruction(LLVMIRParser::ValueInst
                     }
                     inst->callArgKinds.push_back(isPtr);
                 }
+            }
+        }
+        
+        // Handle inline asm: check if it's a load-address pattern or compiler barrier
+        if (callCtx->value() && callCtx->value()->inlineAsm()) {
+            if (!inst->callArgs.empty()) {
+                std::string argText = inst->callArgs[0];
+                if (!argText.empty() && argText[0] == '@') {
+                    // Load address pattern: asm "", "=r,0,..."(@function)
+                    inst->isInlineAsm = true;
+                    inst->calleeName = argText.substr(1); // Remove @ prefix
+                } else {
+                    // Compiler barrier pattern: asm sideeffect ""(...%vreg)
+                    inst->calleeName = "asm";
+                }
+            } else {
+                // No args: asm sideeffect "fnclex", ...()
+                inst->calleeName = "asm";
             }
         }
     }
@@ -942,7 +974,52 @@ std::unique_ptr<Instruction> IrVisitor::parseInstruction(LLVMIRParser::ValueInst
         // GEP result is always a pointer (32-bit)
         inst->resultType = std::make_unique<Type>();
         inst->resultType->kind = TypeKind::Pointer;
-        inst->resultType->elementType = Type::makeVoid();
+        // Parse source element type from GEP instruction (e.g., "i32" in
+        // "getelementptr inbounds i32, ptr %0, i32 1") to set elementType
+        // so that lowerGetElementPtr can compute correct element size.
+        if (gepCtx->type()) {
+            std::string elemTypeStr = gepCtx->type()->getText();
+            if (elemTypeStr.substr(0, 1) == "i") {
+                int bitWidth = parseIntWidth(elemTypeStr);
+                if (bitWidth > 0) {
+                    inst->resultType->elementType = Type::makeInteger(bitWidth);
+                } else {
+                    inst->resultType->elementType = Type::makeVoid();
+                }
+            } else if (elemTypeStr == "ptr") {
+                inst->resultType->elementType = Type::makeInteger(32);
+            } else if (elemTypeStr.find("[") == 0) {
+                // Array type like [256xptr] or [16xi8] (ANTLR getText strips spaces)
+                // Extract the element type after "x"
+                // Format: [NxELEMTYPE]
+                auto xPos = elemTypeStr.find('x');
+                if (xPos != std::string::npos) {
+                    std::string arrElemType = elemTypeStr.substr(xPos + 1);
+                    // Trim trailing ]
+                    while (!arrElemType.empty() && arrElemType.back() == ']') {
+                        arrElemType.pop_back();
+                    }
+                    if (arrElemType.substr(0, 1) == "i") {
+                        int bitWidth = parseIntWidth(arrElemType);
+                        if (bitWidth > 0) {
+                            inst->resultType->elementType = Type::makeInteger(bitWidth);
+                        } else {
+                            inst->resultType->elementType = Type::makeVoid();
+                        }
+                    } else if (arrElemType == "ptr") {
+                        inst->resultType->elementType = Type::makeInteger(32);
+                    } else {
+                        inst->resultType->elementType = Type::makeVoid();
+                    }
+                } else {
+                    inst->resultType->elementType = Type::makeVoid();
+                }
+            } else {
+                inst->resultType->elementType = Type::makeVoid();
+            }
+        } else {
+            inst->resultType->elementType = Type::makeVoid();
+        }
         inst->resultType->bitWidth = 32;
     }
     else if (ctx->iCmpInst()) {
@@ -982,6 +1059,12 @@ std::unique_ptr<Instruction> IrVisitor::parseInstruction(LLVMIRParser::ValueInst
             op.name = truncCtx->typeValue()->value()->getText();
             inst->operands.push_back(std::move(op));
         }
+        if (truncCtx->type()) {
+            std::string typeText = truncCtx->type()->getText();
+            if (typeText.substr(0, 1) == "i") {
+                inst->resultType = Type::makeInteger(parseIntWidth(typeText));
+            }
+        }
     }
            else if (ctx->zExtInst()) {
         inst->opcode = Opcode::ZExt;
@@ -1002,13 +1085,38 @@ std::unique_ptr<Instruction> IrVisitor::parseInstruction(LLVMIRParser::ValueInst
     else if (ctx->sExtInst()) {
         inst->opcode = Opcode::SExt;
         auto *sextCtx = ctx->sExtInst();
+        if (sextCtx->type()) {
+            std::string typeText = sextCtx->type()->getText();
+            if (typeText.substr(0, 1) == "i") {
+                inst->resultType = Type::makeInteger(parseIntWidth(typeText));
+            }
+        }
         if (sextCtx->typeValue()) {
             Operand op;
             op.name = sextCtx->typeValue()->value()->getText();
             inst->operands.push_back(std::move(op));
         }
     }
-    else if (ctx->bitCastInst()) inst->opcode = Opcode::BitCast;
+    else if (ctx->bitCastInst()) {
+        inst->opcode = Opcode::BitCast;
+        auto *bcCtx = ctx->bitCastInst();
+        if (bcCtx->typeValue()) {
+            Operand op;
+            op.name = bcCtx->typeValue()->value()->getText();
+            inst->operands.push_back(std::move(op));
+        }
+        if (bcCtx->type()) {
+            std::string typeText = bcCtx->type()->getText();
+            if (typeText.substr(0, 1) == "i") {
+                inst->resultType = Type::makeInteger(parseIntWidth(typeText));
+            } else if (typeText == "ptr") {
+                inst->resultType = std::make_unique<Type>();
+                inst->resultType->kind = TypeKind::Pointer;
+                inst->resultType->elementType = Type::makeVoid();
+                inst->resultType->bitWidth = 32;
+            }
+        }
+    }
     else if (ctx->intToPtrInst()) {
         inst->opcode = Opcode::IntToPtr;
         auto *intToPtrCtx = ctx->intToPtrInst();
@@ -1016,6 +1124,17 @@ std::unique_ptr<Instruction> IrVisitor::parseInstruction(LLVMIRParser::ValueInst
             Operand op;
             op.name = intToPtrCtx->typeValue()->value()->getText();
             inst->operands.push_back(std::move(op));
+        }
+        if (intToPtrCtx->type()) {
+            std::string typeText = intToPtrCtx->type()->getText();
+            if (typeText == "ptr") {
+                inst->resultType = std::make_unique<Type>();
+                inst->resultType->kind = TypeKind::Pointer;
+                inst->resultType->elementType = Type::makeVoid();
+                inst->resultType->bitWidth = 32;
+            } else if (typeText.substr(0, 1) == "i") {
+                inst->resultType = Type::makeInteger(parseIntWidth(typeText));
+            }
         }
     }
     else if (ctx->ptrToIntInst()) {
@@ -1026,8 +1145,50 @@ std::unique_ptr<Instruction> IrVisitor::parseInstruction(LLVMIRParser::ValueInst
             op.name = ptrToIntCtx->typeValue()->value()->getText();
             inst->operands.push_back(std::move(op));
         }
+        if (ptrToIntCtx->type()) {
+            std::string typeText = ptrToIntCtx->type()->getText();
+            if (typeText.substr(0, 1) == "i") {
+                inst->resultType = Type::makeInteger(parseIntWidth(typeText));
+            } else if (typeText == "ptr") {
+                inst->resultType = std::make_unique<Type>();
+                inst->resultType->kind = TypeKind::Pointer;
+                inst->resultType->elementType = Type::makeVoid();
+                inst->resultType->bitWidth = 32;
+            }
+        }
     }
-    else if (ctx->phiInst()) inst->opcode = Opcode::Phi;
+    else if (ctx->phiInst()) {
+        inst->opcode = Opcode::Phi;
+        auto *phiCtx = ctx->phiInst();
+        // Parse phi type for resultType
+        if (phiCtx->type()) {
+            std::string typeText = phiCtx->type()->getText();
+            if (typeText.substr(0, 1) == "i") {
+                inst->resultType = Type::makeInteger(parseIntWidth(typeText));
+            } else if (typeText == "ptr") {
+                inst->resultType = std::make_unique<Type>();
+                inst->resultType->kind = TypeKind::Pointer;
+                inst->resultType->elementType = Type::makeVoid();
+                inst->resultType->bitWidth = 32;
+            }
+        }
+        // Parse incoming values and predecessor labels
+        // phiInst: 'phi' type (inc (',' inc)*)
+        // inc: '[' value ',' LocalIdent ']'
+        auto incs = phiCtx->inc();
+        for (auto *incCtx : incs) {
+            if (incCtx->value() && incCtx->LocalIdent()) {
+                Instruction::PhiInc inc;
+                inc.value = incCtx->value()->getText();
+                inc.label = incCtx->LocalIdent()->getText();
+                // Strip % prefix to match block labels
+                if (!inc.label.empty() && inc.label[0] == '%') {
+                    inc.label = inc.label.substr(1);
+                }
+                inst->phiIncrements.push_back(std::move(inc));
+            }
+        }
+    }
              else if (ctx->selectInst()) {
         inst->opcode = Opcode::Select;
         auto *selectCtx = ctx->selectInst();
@@ -1088,6 +1249,36 @@ std::unique_ptr<Instruction> IrVisitor::parseInstruction(LLVMIRParser::ValueInst
         }
     } else if (ctx->switchTerm()) {
         inst->opcode = Opcode::SwitchTerm;
+        auto sw = ctx->switchTerm();
+        if (sw->typeValue() && sw->typeValue()->value()) {
+            std::string condText = sw->typeValue()->value()->getText();
+            Operand condOp;
+            condOp.name = condText;
+            inst->operands.push_back(std::move(condOp));
+        }
+        if (sw->label()) {
+            std::string defLabel = sw->label()->LocalIdent()->getText();
+            if (!defLabel.empty() && defLabel[0] == '%') defLabel = defLabel.substr(1);
+            Operand op;
+            op.name = defLabel;
+            inst->operands.push_back(std::move(op));
+        }
+        auto cases = sw->case_();
+        for (auto* caseCtx : cases) {
+            if (caseCtx->typeConst() && caseCtx->typeConst()->constant()) {
+                std::string caseVal = caseCtx->typeConst()->constant()->getText();
+                Operand valOp;
+                valOp.name = caseVal;
+                inst->operands.push_back(std::move(valOp));
+            }
+            if (caseCtx->label()) {
+                std::string caseLabel = caseCtx->label()->LocalIdent()->getText();
+                if (!caseLabel.empty() && caseLabel[0] == '%') caseLabel = caseLabel.substr(1);
+                Operand op;
+                op.name = caseLabel;
+                inst->operands.push_back(std::move(op));
+            }
+        }
     } else if (ctx->unreachableTerm()) {
         inst->opcode = Opcode::UnreachableTerm;
     }

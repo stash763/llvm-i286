@@ -114,6 +114,11 @@ public:
     // Returns bp-relative string for the allocated slot
     std::string allocTemp(int byteSize, bool is32bit = false);
 
+    // Allocate a result slot for a vreg.
+    // If the vreg has a pre-allocated spill slot (cross-block), use that.
+    // Otherwise, allocate a temp slot.
+    std::string allocResultSlot(const std::string& vregName, int byteSize, bool is32bit = false);
+
     // Reset temp space allocator (called at start of each basic block)
     void resetTemp();
 

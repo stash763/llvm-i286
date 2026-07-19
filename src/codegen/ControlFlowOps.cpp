@@ -5,6 +5,7 @@
 // NOTE: Updated to use StackFrame for all register/stack lookups
 
 #include "codegen/InstructionSelectInternal.h"
+#include "codegen/NasmSafe.h"
 
 #include <string>
 #include <vector>
@@ -55,6 +56,11 @@ std::vector<LoweredInstruction> lowerRetTerm(SelectorState& state,
             // Global reference - load address of global into AX:DX
             // Remove @ prefix for NASM
             std::string nasmName = retValName.substr(1);
+            // Convert .name to _name for NASM compatibility (matches CodeGen.cpp)
+            if (!nasmName.empty() && nasmName[0] == '.') {
+                nasmName[0] = '_';
+            }
+            nasmName = safeNasmName(nasmName);
             // Load offset into AX
             Instruction286 leaAx;
             leaAx.mnemonic = "lea";
@@ -181,21 +187,29 @@ std::vector<LoweredInstruction> lowerCondBrTerm(SelectorState& state,
 
         std::string condReg = isConst ? condName : state.frame.getPhysReg(condName);
 
-        // Load condition to AX if needed
+        // Load condition to CX (use CX instead of AX to preserve AX for GEP results)
         if (!isConst && condReg.find("bp") != std::string::npos) {
             Instruction286 loadCond;
             loadCond.mnemonic = "mov";
-            loadCond.operands.push_back("ax");
+            loadCond.operands.push_back("cx");
             loadCond.operands.push_back("[" + condReg + "]");
             lowered.instructions.push_back(loadCond);
-            condReg = "ax";
-        } else if (!isConst && condReg != "ax") {
+            condReg = "cx";
+        } else if (!isConst && condReg != "ax" && condReg != "cx") {
             Instruction286 movCond;
             movCond.mnemonic = "mov";
-            movCond.operands.push_back("ax");
+            movCond.operands.push_back("cx");
             movCond.operands.push_back(condReg);
             lowered.instructions.push_back(movCond);
-            condReg = "ax";
+            condReg = "cx";
+        } else if (!isConst && condReg == "ax") {
+            // Condition is in AX, move to CX to preserve AX
+            Instruction286 movCond;
+            movCond.mnemonic = "mov";
+            movCond.operands.push_back("cx");
+            movCond.operands.push_back("ax");
+            lowered.instructions.push_back(movCond);
+            condReg = "cx";
         }
 
         // Near true label
@@ -208,8 +222,8 @@ std::vector<LoweredInstruction> lowerCondBrTerm(SelectorState& state,
         // Test the condition value to set flags
         Instruction286 testCond;
         testCond.mnemonic = "test";
-        testCond.operands.push_back("ax");
-        testCond.operands.push_back("ax");
+        testCond.operands.push_back(condReg);
+        testCond.operands.push_back(condReg);
         lowered.instructions.push_back(testCond);
 
         Instruction286 nearTrueInst;
@@ -249,7 +263,13 @@ std::vector<LoweredInstruction> lowerSwitch(SelectorState& state,
     LoweredInstruction lowered;
 
     // Switch statement - emit as chained comparisons
-    if (irInst.operands.size() >= 1) {
+    // Operand layout:
+    //   operands[0]: condition value (e.g., "%12")
+    //   operands[1]: default label (e.g., "17")
+    //   operands[2], operands[3]: case value, case label
+    //   operands[4], operands[5]: case value, case label
+    //   ...
+    if (irInst.operands.size() >= 2) {
         std::string condReg = state.frame.getPhysReg(irInst.operands[0].name);
 
         // Load condition to AX
@@ -267,15 +287,17 @@ std::vector<LoweredInstruction> lowerSwitch(SelectorState& state,
             lowered.instructions.push_back(movCond);
         }
 
-        // Emit case comparisons
+        // Build prefix for labels
         std::string prefix = "";
         if (state.currentFunc && !state.currentFunc->name.empty()) {
             prefix = state.currentFunc->name + "_";
         }
-        std::string defaultLabel = prefix + "bb_" + irInst.operands[0].name;
-        std::string endLabel = state.nextLabel(".Lswitch_end_");
 
-        for (size_t i = 1; i < irInst.operands.size(); i += 2) {
+        // Default label
+        std::string defaultLabel = prefix + "bb_" + irInst.operands[1].name;
+
+        // Emit case comparisons (starting from operands[2])
+        for (size_t i = 2; i + 1 < irInst.operands.size(); i += 2) {
             std::string caseValue = irInst.operands[i].name;
             std::string caseLabel = irInst.operands[i + 1].name;
 
@@ -291,20 +313,14 @@ std::vector<LoweredInstruction> lowerSwitch(SelectorState& state,
             lowered.instructions.push_back(jmpCase);
         }
 
-        // Jump to default
+        // Jump to default (fallthrough)
         Instruction286 jmpDefault;
         jmpDefault.mnemonic = "jmp";
         jmpDefault.operands.push_back(defaultLabel);
         lowered.instructions.push_back(jmpDefault);
-
-        // End label
-        LoweredInstruction endLabelInst;
-        endLabelInst.label = endLabel;
-        loweredVec.push_back(lowered);
-        lowered = LoweredInstruction{};
-        loweredVec.push_back(endLabelInst);
     }
 
+    loweredVec.push_back(lowered);
     return loweredVec;
 }
 
@@ -635,7 +651,14 @@ std::vector<LoweredInstruction> lowerICmp(SelectorState& state,
             loweredVec.push_back(endLabelInst);
 
             if (!irInst.resultName.empty()) {
-                state.frame.setPhysReg(irInst.resultName, "ax");
+                // Save result to stack temp to prevent clobbering by subsequent ops
+                std::string tempSlot = state.frame.allocResultSlot(irInst.resultName, 2, false);
+                Instruction286 saveResult;
+                saveResult.mnemonic = "mov";
+                saveResult.operands.push_back("[" + tempSlot + "]");
+                saveResult.operands.push_back("ax");
+                lowered.instructions.push_back(saveResult);
+                state.frame.setPhysReg(irInst.resultName, tempSlot);
             }
         } else {
             // 16-bit comparison
@@ -740,7 +763,14 @@ std::vector<LoweredInstruction> lowerICmp(SelectorState& state,
             }
 
             if (!irInst.resultName.empty()) {
-                state.frame.setPhysReg(irInst.resultName, "ax");
+                // Save result to stack temp to prevent clobbering by subsequent ops
+                std::string tempSlot = state.frame.allocResultSlot(irInst.resultName, 2, false);
+                Instruction286 saveResult;
+                saveResult.mnemonic = "mov";
+                saveResult.operands.push_back("[" + tempSlot + "]");
+                saveResult.operands.push_back("ax");
+                lowered.instructions.push_back(saveResult);
+                state.frame.setPhysReg(irInst.resultName, tempSlot);
             }
         }
     }
