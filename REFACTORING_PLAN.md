@@ -137,6 +137,8 @@ Handlers construct operands as raw strings: `"[bp+6]"`, `"[es:bx]"`, `"[" + glob
 
 **Immediate wins:** Phase 4 (frame size fix) and Phase 7 (emitter fix) can be done independently and likely fix the test_hello segfault.
 
+**Phase 4 status: IMPLEMENTED.** `extendTempArea()` dynamically updates `totalFrameSize`; epilogue uses `lea sp, [bp-6]` instead of `add sp, frameSize` to avoid early-return block mismatch. Frame size mismatch resolved (confirmed via td2ine trace). test_hello still loops in musl `exit()` — see "exit() infinite loop" risk below. Likely a codegen bug in `a_cas` inline function compilation, to be fixed by Phases 1-3.
+
 **Strategic investment:** Phase 1 (typed operands) is the highest-effort but highest-impact change. Once done, Phases 2-3 follow naturally and dramatically reduce handler file sizes.
 
 ---
@@ -555,6 +557,18 @@ After all phases complete:
 ### Risk: Frame size fix doesn't fix segfault
 
 **Mitigation:** Phase 4 has three options (A, B, C). Start with Option C (simplest). If it doesn't fix the segfault, use td2ine trace to identify the actual mismatch, then try Option A (two-pass lowering).
+
+### Risk: exit() infinite loop in musl (__sys_pause / SYS_pause=999)
+
+**Status:** Observed after Phase 4 fix. test_hello compiles and links but loops in musl's `exit()` function calling `__os2_syscall1(999, 0)` (SYS_pause) in a `for(;;)` loop.
+
+**Root cause analysis:** `exit()` uses `a_cas(exit_lock, 0, tid)` where `tid = __pthread_self()->tid`. `__get_tp()` returns 0 (no TLS on i286), so `__pthread_self()` is NULL. The `a_cas` inline function does a 32-bit compare-and-swap on `exit_lock`. If codegen compiles `a_cas` incorrectly (wrong return value, wrong 32-bit comparison, or wrong conditional store), `prev` becomes non-zero, triggering the `for(;;) __sys_pause()` branch.
+
+**Likelihood this is a codegen bug:** High (70-80%). `a_cas` is a simple inline function (`int old = *p; if (old == t) *p = s; return old;`) that involves 32-bit load, 32-bit comparison, conditional store, and 32-bit return — exactly the patterns RC1 (string-based operands) and RC2 (string-based locations) address.
+
+**Mitigation:** Postpone musl workaround until after Phases 1-3. Re-test test_hello after each phase. If the loop persists after Phase 3, implement a musl platform fix: make `__get_tp()` return a pointer to a static `struct __pthread` instance (allocated in BSS) instead of 0, so `__pthread_self()` dereferences a valid struct with `tid = 1`. This is a minimal musl change in `arch/i286/pthread_arch.h`.
+
+**Verification:** After Phase 3, trace `exit()` / `a_cas` under td2ine to confirm whether `prev` is non-zero (codegen bug) or zero (musl platform issue). If `prev` is 0 and the loop still triggers, the control flow codegen is wrong. If `prev` is non-zero, check whether `a_cas` returns the correct value.
 
 ---
 

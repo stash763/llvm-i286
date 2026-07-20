@@ -164,12 +164,24 @@ void FunctionAnalysis::analyzeBlocks(const ir::Function& func, StackFrame& frame
                 if (!inst->resultName.empty()) {
                     if (is32) {
                         info.tempSpaceNeeded += 4;
-                    } else {
+                    } else if (inst->resultType) {
+                        // Known 16-bit (or smaller) result
                         info.tempSpaceNeeded += 2;
+                    } else {
+                        // Unknown result type - be conservative, assume 32-bit
+                        info.tempSpaceNeeded += 4;
                     }
                 }
-                // Load through register pointer needs extra 4 bytes for pointer save
+                // Load through register/stack pointer needs extra 4 bytes for pointer save
                 if (inst->opcode == ir::Opcode::Load && !inst->resultName.empty()) {
+                    info.tempSpaceNeeded += 4;
+                }
+                // GEP needs extra temp space for intermediate pointer computations
+                if (inst->opcode == ir::Opcode::GetElementPtr && !inst->resultName.empty()) {
+                    info.tempSpaceNeeded += 4;
+                }
+                // Call may need extra temp space for argument preparation
+                if (inst->opcode == ir::Opcode::Call && !inst->resultName.empty()) {
                     info.tempSpaceNeeded += 4;
                 }
             }
@@ -233,6 +245,10 @@ void FunctionAnalysis::computeMaxTempSpace(const std::vector<BlockInfo>& blockIn
             maxTemp = info.tempSpaceNeeded;
         }
     }
+
+    // Add safety margin to account for any uncounted temp allocations
+    // (e.g., pointer saves, intermediate computations, argument prep)
+    maxTemp += 16;
 
     frame.setMaxTempSpace(maxTemp);
 }

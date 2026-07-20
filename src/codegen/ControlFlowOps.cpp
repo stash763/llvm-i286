@@ -110,14 +110,14 @@ std::vector<LoweredInstruction> lowerRetTerm(SelectorState& state,
     }
 
     // Deallocate stack frame before restoring saved registers
-    int frameSize = state.frame.getFrameSize();
-    if (frameSize > 0) {
-        Instruction286 addSp;
-        addSp.mnemonic = "add";
-        addSp.operands.push_back("sp");
-        addSp.operands.push_back(std::to_string(frameSize));
-        lowered.instructions.push_back(addSp);
-    }
+    // Use lea sp, [bp-6] instead of add sp, frameSize to avoid
+    // frame size mismatch when totalFrameSize is extended after
+    // early return blocks are lowered.
+    Instruction286 leaSp;
+    leaSp.mnemonic = "lea";
+    leaSp.operands.push_back("sp");
+    leaSp.operands.push_back("[bp-6]");
+    lowered.instructions.push_back(leaSp);
 
     // Restore callee-saved registers
     Instruction286 popDi;

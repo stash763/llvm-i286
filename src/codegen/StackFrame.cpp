@@ -140,6 +140,7 @@ void StackFrame::computeLayout() {
         tempBase = nextLocalOffset;
         tempCurrent = nextLocalOffset;
     }
+    maxTempReached = tempCurrent;
 
     // Step 4: Compute total frame size
     totalFrameSize = localsSize + tempSize;
@@ -271,7 +272,24 @@ std::string StackFrame::getParamReg(const std::string& vregName) const {
 // Temp space management
 // ============================================================================
 
+void StackFrame::extendTempArea(int neededBytes) {
+    // Called when tempCurrent + neededBytes exceeds the pre-allocated temp area.
+    // Extends the temp area downward (more negative) and updates totalFrameSize.
+    // This ensures the prologue (sub sp, totalFrameSize) allocates enough stack.
+    int currentUsage = tempCurrent - tempBase;
+    if (currentUsage + neededBytes > tempSize) {
+        int newSize = currentUsage + neededBytes;
+        int excess = newSize - tempSize;
+        tempBase -= excess;
+        tempSize = newSize;
+        totalFrameSize = localsSize + tempSize;
+    }
+}
+
 std::string StackFrame::allocTemp(int byteSize, bool is32bit) {
+    // Check if we need to extend the temp area (dynamic frame size fix)
+    extendTempArea(byteSize);
+
     // Temp space is pre-allocated, just advance the pointer
     std::string offset = buildBpOffset(tempCurrent);
 
@@ -289,6 +307,7 @@ std::string StackFrame::allocTemp(int byteSize, bool is32bit) {
     slots.push_back(slot);
 
     tempCurrent += byteSize;
+    if (tempCurrent > maxTempReached) maxTempReached = tempCurrent;
 
     return offset;
 }
@@ -302,6 +321,9 @@ std::string StackFrame::allocResultSlot(const std::string& vregName, int byteSiz
             return buildBpOffset(slot.bpOffset);
         }
     }
+    // Check if we need to extend the temp area (dynamic frame size fix)
+    extendTempArea(byteSize);
+
     // Otherwise, allocate a temp slot and register it under the actual vreg name
     std::string offset = buildBpOffset(tempCurrent);
 
@@ -316,6 +338,7 @@ std::string StackFrame::allocResultSlot(const std::string& vregName, int byteSiz
     slots.push_back(slot);
 
     tempCurrent += byteSize;
+    if (tempCurrent > maxTempReached) maxTempReached = tempCurrent;
 
     return offset;
 }
@@ -536,6 +559,10 @@ std::string StackFrame::allocStack(std::vector<Instruction286>& output,
 
     vregToSlotIndex[vregName] = static_cast<int>(slots.size());
     slots.push_back(slot);
+
+    // Update frame size to account for this dynamic allocation
+    localsSize += byteSize;
+    totalFrameSize = localsSize + tempSize;
 
     return buildBpOffset(offset);
 }

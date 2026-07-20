@@ -122,6 +122,9 @@ public:
     // Reset temp space allocator (called at start of each basic block)
     void resetTemp();
 
+    // Extend temp area if needed (dynamic frame size fix)
+    void extendTempArea(int neededBytes);
+
     // =========================================================================
     // Register tracking
     // =========================================================================
@@ -198,6 +201,7 @@ private:
     int totalFrameSize = 0;       // localsSize + tempSize
     int tempBase = 0;             // bp offset of temp area start
     int tempCurrent = 0;          // current temp offset (reset per block)
+    int maxTempReached = 0;       // highest tempCurrent seen across all blocks
 
     // Helper to build bp-relative offset string
     static std::string buildBpOffset(int offset);
