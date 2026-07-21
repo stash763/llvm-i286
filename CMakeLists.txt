@@ -110,6 +110,7 @@ generate_antlr_grammar(
 add_library(ir_parser
     src/ir/IrParser.cpp
     src/ir/IrAst.cpp
+    src/ir/OperandRef.cpp
     src/ir/IrVisitor.cpp
 )
 target_include_directories(ir_parser PUBLIC ${CMAKE_SOURCE_DIR}/src ${GENERATED_PARSER_DIR} ${ANTLR4_RUNTIME_INCLUDE})

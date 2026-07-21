@@ -24,18 +24,14 @@ std::vector<LoweredInstruction> lowerRetTerm(SelectorState& state,
         std::string retValName = irInst.operands[0].name;
 
         // Check if return value is a constant (not a vreg)
-        bool isConst = false;
-        try {
-            std::stoi(retValName);
-            isConst = true;
-        } catch (...) {}
+        bool isConst = irInst.operands[0].ref.isConstant();
 
         // Check if this is a 32-bit return value
         bool is32 = state.frame.is32bit(retValName) ||
                     (irInst.resultType && irInst.resultType->bitWidth == 32);
 
-        // Check if return value is a global reference (starts with @)
-        bool isGlobal = (!retValName.empty() && retValName[0] == '@');
+        // Check if return value is a global reference
+        bool isGlobal = irInst.operands[0].ref.isGlobal() && !irInst.operands[0].ref.isGEPExpr() && !irInst.operands[0].ref.isPtrToIntExpr();
 
         if (isConst) {
             // Load constant into AX
@@ -54,13 +50,7 @@ std::vector<LoweredInstruction> lowerRetTerm(SelectorState& state,
             }
         } else if (isGlobal) {
             // Global reference - load address of global into AX:DX
-            // Remove @ prefix for NASM
-            std::string nasmName = retValName.substr(1);
-            // Convert .name to _name for NASM compatibility (matches CodeGen.cpp)
-            if (!nasmName.empty() && nasmName[0] == '.') {
-                nasmName[0] = '_';
-            }
-            nasmName = safeNasmName(nasmName);
+            std::string nasmName = safeNasmName(irInst.operands[0].ref.nasmName());
             // Load offset into AX
             Instruction286 leaAx;
             leaAx.mnemonic = "lea";
@@ -75,33 +65,32 @@ std::vector<LoweredInstruction> lowerRetTerm(SelectorState& state,
             lowered.instructions.push_back(movSeg);
         } else {
             // Value is a vreg - use StackFrame to get its location
-            std::string retValReg = state.frame.getPhysReg(retValName);
+            Location retValLoc = state.frame.getPhysRegLoc(retValName);
 
             // Check if value is in memory (stack) or register
-            if (retValReg.find("bp") != std::string::npos) {
+            if (retValLoc.isStack()) {
                 // Stack location - load from memory
                 Instruction286 movLow;
                 movLow.mnemonic = "mov";
                 movLow.operands.push_back("ax");
-                movLow.operands.push_back("[" + retValReg + "]");
+                movLow.operands.push_back(retValLoc.bracketed());
                 lowered.instructions.push_back(movLow);
 
                 if (is32) {
                     // Load high word from [bp-offset+2]
-                    std::string highOffset = state.frame.getHighBpOffset(retValName);
                     Instruction286 movHigh;
                     movHigh.mnemonic = "mov";
                     movHigh.operands.push_back("dx");
-                    movHigh.operands.push_back("[" + highOffset + "]");
+                    movHigh.operands.push_back(retValLoc.bracketedHigh());
                     lowered.instructions.push_back(movHigh);
                 }
             } else {
                 // Register - move to AX if needed
-                if (retValReg != "ax") {
+                if (retValLoc.regName != "ax") {
                     Instruction286 movReg;
                     movReg.mnemonic = "mov";
                     movReg.operands.push_back("ax");
-                    movReg.operands.push_back(retValReg);
+                    movReg.operands.push_back(retValLoc.regName);
                     lowered.instructions.push_back(movReg);
                 }
                 // If is32, DX should already have high word (from calling convention)
@@ -182,20 +171,20 @@ std::vector<LoweredInstruction> lowerCondBrTerm(SelectorState& state,
         std::string condName = irInst.operands[0].name;
 
         // Check if condition is a constant
-        auto condKind = state.frame.classifyOperand(condName);
-        bool isConst = (condKind == StackFrame::OperandKind::Constant);
+        bool isConst = irInst.operands[0].ref.isConstant();
 
         std::string condReg = isConst ? condName : state.frame.getPhysReg(condName);
+        Location condLoc = isConst ? Location::none() : state.frame.getPhysRegLoc(condName);
 
         // Load condition to CX (use CX instead of AX to preserve AX for GEP results)
-        if (!isConst && condReg.find("bp") != std::string::npos) {
+        if (!isConst && condLoc.isStack()) {
             Instruction286 loadCond;
             loadCond.mnemonic = "mov";
             loadCond.operands.push_back("cx");
-            loadCond.operands.push_back("[" + condReg + "]");
+            loadCond.operands.push_back(condLoc.bracketed());
             lowered.instructions.push_back(loadCond);
             condReg = "cx";
-        } else if (!isConst && condReg != "ax" && condReg != "cx") {
+        } else if (!isConst && !condLoc.isStack() && condReg != "ax" && condReg != "cx") {
             Instruction286 movCond;
             movCond.mnemonic = "mov";
             movCond.operands.push_back("cx");
@@ -240,7 +229,7 @@ std::vector<LoweredInstruction> lowerCondBrTerm(SelectorState& state,
 
         // Near true label (trampoline - use unique name to avoid duplicating the real BB label)
         LoweredInstruction nearTrueLabelInst;
-        nearTrueLabelInst.label = prefix + "bb_" + irInst.operands[1].name + "_near";
+        nearTrueLabelInst.label = prefix + "bb_" + irInst.operands[1].name + "_near" + std::to_string(state.labelCounter++);
         loweredVec.push_back(lowered);
         lowered = LoweredInstruction{};
         loweredVec.push_back(nearTrueLabelInst);
@@ -271,13 +260,14 @@ std::vector<LoweredInstruction> lowerSwitch(SelectorState& state,
     //   ...
     if (irInst.operands.size() >= 2) {
         std::string condReg = state.frame.getPhysReg(irInst.operands[0].name);
+        Location condLoc = state.frame.getPhysRegLoc(irInst.operands[0].name);
 
         // Load condition to AX
-        if (condReg.find("bp") != std::string::npos) {
+        if (condLoc.isStack()) {
             Instruction286 loadCond;
             loadCond.mnemonic = "mov";
             loadCond.operands.push_back("ax");
-            loadCond.operands.push_back("[" + condReg + "]");
+            loadCond.operands.push_back(condLoc.bracketed());
             lowered.instructions.push_back(loadCond);
         } else if (condReg != "ax") {
             Instruction286 movCond;
@@ -355,18 +345,17 @@ std::vector<LoweredInstruction> lowerSelect(SelectorState& state,
 
     if (irInst.operands.size() >= 3) {
         std::string condName = irInst.operands[0].name;
-        bool isCondConst = false;
-        try {
-            std::stoi(condName);
-            isCondConst = true;
-        } catch (...) {}
+        bool isCondConst = irInst.operands[0].ref.isConstant();
 
         std::string condReg = isCondConst ? condName : state.frame.getPhysReg(condName);
         std::string val1Reg = state.frame.getPhysReg(irInst.operands[1].name);
         std::string val2Reg = state.frame.getPhysReg(irInst.operands[2].name);
+        Location val1Loc = state.frame.getPhysRegLoc(irInst.operands[1].name);
+        Location val2Loc = state.frame.getPhysRegLoc(irInst.operands[2].name);
 
         std::string destReg = resultReg.empty() ? "ax" : resultReg;
-        bool destIsMem = destReg.find("bp") != std::string::npos;
+        Location destLoc = resultReg.empty() ? Location::reg("ax") : state.frame.getPhysRegLoc(resultReg);
+        bool destIsMem = destLoc.isStack();
         std::string workReg = destIsMem ? "ax" : destReg;
 
         // Test condition
@@ -390,8 +379,8 @@ std::vector<LoweredInstruction> lowerSelect(SelectorState& state,
         Instruction286 loadFalse;
         loadFalse.mnemonic = "mov";
         loadFalse.operands.push_back(workReg);
-        if (val2Reg.find("bp") != std::string::npos) {
-            loadFalse.operands.push_back("[" + val2Reg + "]");
+        if (val2Loc.isStack()) {
+            loadFalse.operands.push_back(val2Loc.bracketed());
         } else {
             loadFalse.operands.push_back(val2Reg);
         }
@@ -412,8 +401,8 @@ std::vector<LoweredInstruction> lowerSelect(SelectorState& state,
         Instruction286 loadTrue;
         loadTrue.mnemonic = "mov";
         loadTrue.operands.push_back(workReg);
-        if (val1Reg.find("bp") != std::string::npos) {
-            loadTrue.operands.push_back("[" + val1Reg + "]");
+        if (val1Loc.isStack()) {
+            loadTrue.operands.push_back(val1Loc.bracketed());
         } else {
             loadTrue.operands.push_back(val1Reg);
         }
@@ -457,15 +446,15 @@ std::vector<LoweredInstruction> lowerICmp(SelectorState& state,
             std::string op1Name = irInst.operands[0].name;
             std::string op2Name = irInst.operands[1].name;
 
-            bool op1IsConst = state.frame.classifyOperand(op1Name) == StackFrame::OperandKind::Constant;
-            bool op2IsConst = state.frame.classifyOperand(op2Name) == StackFrame::OperandKind::Constant;
+           bool op1IsConst = irInst.operands[0].ref.isConstant();
+            bool op2IsConst = irInst.operands[1].ref.isConstant();
 
             std::string op1Reg = op1IsConst ? op1Name : state.frame.getPhysReg(op1Name);
             std::string op2Reg = op2IsConst ? op2Name : state.frame.getPhysReg(op2Name);
 
             // Load op1 low word to AX, high word to BX
             if (op1IsConst) {
-                int64_t val = std::stoll(op1Name);
+                int64_t val = irInst.operands[0].ref.constValue;
                 Instruction286 loadLow;
                 loadLow.mnemonic = "mov";
                 loadLow.operands.push_back("ax");
@@ -483,8 +472,8 @@ std::vector<LoweredInstruction> lowerICmp(SelectorState& state,
             }
 
             // Load op2 low word to CX, high word to DX
-            if (op2IsConst) {
-                int64_t val = std::stoll(op2Name);
+           if (op2IsConst) {
+                int64_t val = irInst.operands[1].ref.constValue;
                 Instruction286 loadLow;
                 loadLow.mnemonic = "mov";
                 loadLow.operands.push_back("cx");
@@ -665,21 +654,23 @@ std::vector<LoweredInstruction> lowerICmp(SelectorState& state,
             std::string op1Name = irInst.operands[0].name;
             std::string op2Name = irInst.operands[1].name;
 
-            bool op1IsConst = state.frame.classifyOperand(op1Name) == StackFrame::OperandKind::Constant;
-            bool op2IsConst = state.frame.classifyOperand(op2Name) == StackFrame::OperandKind::Constant;
+           bool op1IsConst = irInst.operands[0].ref.isConstant();
+            bool op2IsConst = irInst.operands[1].ref.isConstant();
 
             std::string op1Reg = op1IsConst ? op1Name : state.frame.getPhysReg(op1Name);
             std::string op2Reg = op2IsConst ? op2Name : state.frame.getPhysReg(op2Name);
+            Location op1Loc = op1IsConst ? Location::none() : state.frame.getPhysRegLoc(op1Name);
+            Location op2Loc = op2IsConst ? Location::none() : state.frame.getPhysRegLoc(op2Name);
 
             // Load operands into registers if they're memory locations
-            bool op1IsMem = !op1IsConst && (op1Reg.find("bp") != std::string::npos);
-            bool op2IsMem = !op2IsConst && (op2Reg.find("bp") != std::string::npos);
+            bool op1IsMem = !op1IsConst && op1Loc.isStack();
+            bool op2IsMem = !op2IsConst && op2Loc.isStack();
 
             if (op1IsMem) {
                 Instruction286 loadOp1;
                 loadOp1.mnemonic = "mov";
                 loadOp1.operands.push_back("ax");
-                loadOp1.operands.push_back("[" + op1Reg + "]");
+                loadOp1.operands.push_back(op1Loc.bracketed());
                 lowered.instructions.push_back(loadOp1);
                 op1Reg = "ax";
             } else if (!op1IsConst && op1Reg != "ax") {
@@ -696,7 +687,7 @@ std::vector<LoweredInstruction> lowerICmp(SelectorState& state,
                 Instruction286 loadOp2;
                 loadOp2.mnemonic = "mov";
                 loadOp2.operands.push_back(tmpReg);
-                loadOp2.operands.push_back("[" + op2Reg + "]");
+                loadOp2.operands.push_back(op2Loc.bracketed());
                 lowered.instructions.push_back(loadOp2);
                 op2Reg = tmpReg;
             }

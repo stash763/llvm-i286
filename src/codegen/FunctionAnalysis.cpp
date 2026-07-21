@@ -103,8 +103,8 @@ void FunctionAnalysis::analyzeBlocks(const ir::Function& func, StackFrame& frame
 
         // Collect used vregs (operand names of non-terminator instructions)
         for (const auto& inst : bb->instructions) {
-            for (const auto& op : inst->operands) {
-                if (!op.name.empty() && op.name[0] == '%') {
+           for (const auto& op : inst->operands) {
+                if (op.ref.isVreg()) {
                     info.used.insert(op.name);
                 }
             }
@@ -118,9 +118,9 @@ void FunctionAnalysis::analyzeBlocks(const ir::Function& func, StackFrame& frame
         }
 
         // Collect used vregs from terminator operands
-        if (bb->terminator) {
+         if (bb->terminator) {
             for (const auto& op : bb->terminator->operands) {
-                if (!op.name.empty() && op.name[0] == '%') {
+                if (op.ref.isVreg()) {
                     info.used.insert(op.name);
                 }
             }

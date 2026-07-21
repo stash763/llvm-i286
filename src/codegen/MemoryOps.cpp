@@ -62,18 +62,14 @@ std::vector<LoweredInstruction> lowerStore(SelectorState& state,
         // Check if the pointer is an alloca result (ADDRESS, not VALUE)
         bool ptrIsAlloca = state.frame.isAlloca(ptrName);
 
-        // Check if the pointer is a global variable (e.g., @arg_array)
+       // Check if the pointer is a global variable (e.g., @arg_array)
         // Globals are in DGROUP (DS segment), use lea bx, [name] to get address
-        bool ptrIsGlobal = (!ptrName.empty() && ptrName[0] == '@');
+        bool ptrIsGlobal = irInst.operands[1].ref.isGlobal();
         std::string globalPtrName;
         int64_t gepByteOffset = 0;
         bool ptrIsGEP = false;
-        if (ptrIsGlobal) {
-            globalPtrName = ptrName.substr(1); // Remove @ prefix
-            if (!globalPtrName.empty() && globalPtrName[0] == '.') {
-                globalPtrName[0] = '_';
-            }
-            globalPtrName = safeNasmName(globalPtrName);
+        if (ptrIsGlobal && !irInst.operands[1].ref.isGEPExpr() && !irInst.operands[1].ref.isPtrToIntExpr()) {
+            globalPtrName = safeNasmName(irInst.operands[1].ref.nasmName());
         }
 
         // Check if pointer is a GEP constant expression: getelementptr(...@global...)
@@ -119,27 +115,24 @@ std::vector<LoweredInstruction> lowerStore(SelectorState& state,
         std::string valReg = state.frame.getPhysReg(valName);
         bool isRegOrParam = (state.frame.hasSlot(valName));
 
-        // Check if value is a constant (not a parameter or vreg)
+       // Check if value is a constant (not a parameter or vreg)
         bool isConst = false;
         std::string constVal = valName;
         if (!isRegOrParam) {
-            if (valName == "null" || valName == "false") {
+            if (irInst.operands[0].ref.isNull() || (irInst.operands[0].ref.isBool() && !irInst.operands[0].ref.boolValue)) {
                 isConst = true;
                 constVal = "0";
-            } else if (valName == "true") {
+            } else if (irInst.operands[0].ref.isBool() && irInst.operands[0].ref.boolValue) {
                 isConst = true;
                 constVal = "1";
-            } else {
-                try {
-                    std::stoi(valName);
-                    isConst = true;
-                    constVal = valName;
-                } catch (...) {}
+            } else if (irInst.operands[0].ref.isConstant()) {
+                isConst = true;
+                constVal = valName;
             }
         }
-        
-        // Check if value is a global variable reference (starts with @)
-        bool isGlobal = (!valName.empty() && valName[0] == '@');
+
+        // Check if value is a global variable reference
+        bool isGlobal = irInst.operands[0].ref.isGlobal() && !irInst.operands[0].ref.isGEPExpr() && !irInst.operands[0].ref.isPtrToIntExpr();
 
          if (is32) {
             // 32-bit store: store both low and high words
@@ -533,17 +526,11 @@ std::vector<LoweredInstruction> lowerLoad(SelectorState& state,
     // Load value from memory
     // Operands: [0] = pointer to load from
     if (!irInst.operands.empty()) {
-        // Check if pointer is a global variable (starts with @)
+       // Check if pointer is a global variable
         std::string ptrName = irInst.operands[0].name;
-        if (!ptrName.empty() && ptrName[0] == '@') {
+        if (irInst.operands[0].ref.isGlobal() && !irInst.operands[0].ref.isGEPExpr() && !irInst.operands[0].ref.isPtrToIntExpr()) {
                 // Global variable: load its value
-                std::string globalName = ptrName.substr(1); // Remove @ prefix
-                // Convert .name to _name for NASM compatibility (matches CodeGen.cpp)
-                if (!globalName.empty() && globalName[0] == '.') {
-                    globalName[0] = '_';
-                }
-                // Mangle NASM reserved words
-                globalName = safeNasmName(globalName);
+                std::string globalName = safeNasmName(irInst.operands[0].ref.nasmName());
             
             // Get result stack location
             std::string resultStack = state.frame.getPhysReg(irInst.resultName);
@@ -1283,17 +1270,13 @@ std::vector<LoweredInstruction> lowerGetElementPtr(SelectorState& state,
                 lowered.instructions.push_back(xorHigh);
             }
 
-            // Add offset for each index
+           // Add offset for each index
             for (size_t i = 1; i < irInst.operands.size(); i++) {
                 std::string idxName = irInst.operands[i].name;
 
-                // Check if index is a constant (check original name, not register)
-                bool isConst = false;
-                int constVal = 0;
-                try {
-                    constVal = std::stoi(idxName);
-                    isConst = true;
-                } catch (...) {}
+                // Check if index is a constant
+                bool isConst = irInst.operands[i].ref.isConstant();
+                int constVal = isConst ? (int)irInst.operands[i].ref.constValue : 0;
 
                 std::string idxReg = state.frame.getPhysReg(irInst.operands[i].name);
 
@@ -1421,16 +1404,12 @@ std::vector<LoweredInstruction> lowerGetElementPtr(SelectorState& state,
             }
 
             // Add offset for each index
-            for (size_t i = 1; i < irInst.operands.size(); i++) {
+           for (size_t i = 1; i < irInst.operands.size(); i++) {
                 std::string idxName = irInst.operands[i].name;
 
-                // Check if index is a constant (check original name, not register)
-                bool isConst = false;
-                int constVal = 0;
-                try {
-                    constVal = std::stoi(idxName);
-                    isConst = true;
-                } catch (...) {}
+                // Check if index is a constant
+                bool isConst = irInst.operands[i].ref.isConstant();
+                int constVal = isConst ? (int)irInst.operands[i].ref.constValue : 0;
 
                 std::string idxReg = state.frame.getPhysReg(irInst.operands[i].name);
 

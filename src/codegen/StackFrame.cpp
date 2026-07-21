@@ -192,7 +192,7 @@ std::string StackFrame::getHighBpOffset(const std::string& vregName) const {
         if (regIt != vregToPhys_.end()) {
             regOrAddr = regIt->second;
         }
-        
+
         if (regOrAddr.find("bp") != std::string::npos) {
             // Stack location or bp-relative string - compute high word offset
             int offset = 0;
@@ -218,6 +218,32 @@ std::string StackFrame::getHighBpOffset(const std::string& vregName) const {
 
     // Local/spill/temp - compute high word offset
     return buildBpOffset(slot.bpOffset + 2);
+}
+
+Location StackFrame::getHighBpOffsetLoc(const std::string& vregName) const {
+    auto it = vregToSlotIndex.find(vregName);
+    if (it == vregToSlotIndex.end()) {
+        // Vreg not in slots - check if it's a register or direct bp-relative string
+        auto regIt = vregToPhys_.find(vregName);
+        if (regIt != vregToPhys_.end()) {
+            return Location::reg(regIt->second + "+2");
+        }
+        // Unknown vreg — fallback
+        return Location::reg("ax+2");
+    }
+
+    const SlotInfo& slot = slots[it->second];
+
+    if (slot.kind == SlotKind::Param) {
+        if (!slot.paramReg.empty()) {
+            return Location::reg(slot.paramReg + "+2", slot.is32bit);
+        }
+        // Stack param - compute high word offset
+        return Location::stack(slot.bpOffset + 2, slot.is32bit);
+    }
+
+    // Local/spill/temp - compute high word offset
+    return Location::stack(slot.bpOffset + 2, slot.is32bit);
 }
 
 int StackFrame::getSlotSize(const std::string& vregName) const {
@@ -373,6 +399,27 @@ std::string StackFrame::getPhysReg(const std::string& vregName) const {
     return "ax";  // fallback
 }
 
+Location StackFrame::getPhysRegLoc(const std::string& vregName) const {
+    // Check if it's a slot first (could be stack location)
+    auto slotIt = vregToSlotIndex.find(vregName);
+    if (slotIt != vregToSlotIndex.end()) {
+        const SlotInfo& slot = slots[slotIt->second];
+        if (slot.kind == SlotKind::Param && !slot.paramReg.empty()) {
+            return Location::reg(slot.paramReg, slot.is32bit);
+        }
+        // Return stack location
+        return Location::stack(slot.bpOffset, slot.is32bit);
+    }
+
+    // Check register tracking
+    auto regIt = vregToPhys_.find(vregName);
+    if (regIt != vregToPhys_.end()) {
+        return Location::reg(regIt->second);
+    }
+
+    return Location::none();  // unknown vreg — caller should handle
+}
+
 void StackFrame::setPhysReg(const std::string& vregName, const std::string& reg) {
     // Clear old mapping if exists
     auto oldIt = vregToPhys_.find(vregName);
@@ -442,11 +489,14 @@ StackFrame::OperandKind StackFrame::classifyOperand(const std::string& name) con
 
     // Check if it's a vreg (register or stack location)
     if (hasSlot(name) || vregToPhys_.find(name) != vregToPhys_.end()) {
-        std::string phys = getPhysReg(name);
-        if (phys.find("bp") != std::string::npos) {
+        Location loc = getPhysRegLoc(name);
+        if (loc.isStack()) {
             return OperandKind::Memory;
         }
-        return OperandKind::Register;
+        if (loc.isRegister()) {
+            return OperandKind::Register;
+        }
+        return OperandKind::Unknown;  // Location::None
     }
 
     return OperandKind::Unknown;
@@ -460,41 +510,31 @@ void StackFrame::emitLoad32(std::vector<Instruction286>& output,
                              const std::string& vregName,
                              const std::string& lowReg,
                              const std::string& highReg) const {
-    std::string bpOffset = getBpOffset(vregName);
-    bool isReg = (bpOffset == "ax" || bpOffset == "cx" || bpOffset == "dx" || bpOffset == "bx");
+    Location loc = getPhysRegLoc(vregName);
 
     // If the value is in a register, move it to bx for dereferencing
     // In 16-bit mode, only bx/si/di/bp can be base registers for memory addressing
-    if (isReg && bpOffset != "bx") {
+    if (loc.isRegister() && loc.regName != "bx") {
         Instruction286 movToBx;
         movToBx.mnemonic = "mov";
         movToBx.operands.push_back("bx");
-        movToBx.operands.push_back(bpOffset);
+        movToBx.operands.push_back(loc.regName);
         output.push_back(movToBx);
-        bpOffset = "bx";
+        loc = Location::reg("bx", loc.is32bit);
     }
 
     // Load low word
     Instruction286 loadLow;
     loadLow.mnemonic = "mov";
     loadLow.operands.push_back(lowReg);
-    loadLow.operands.push_back("[" + bpOffset + "]");
+    loadLow.operands.push_back(loc.bracketed());
     output.push_back(loadLow);
 
     // Load high word
     Instruction286 loadHigh;
     loadHigh.mnemonic = "mov";
     loadHigh.operands.push_back(highReg);
-
-    if (bpOffset.find("bp") != std::string::npos) {
-        // Stack location - compute high word offset
-        std::string highOffset = getHighBpOffset(vregName);
-        loadHigh.operands.push_back("[" + highOffset + "]");
-    } else {
-        // Register - just use reg+2
-        loadHigh.operands.push_back("[" + bpOffset + "+2]");
-    }
-
+    loadHigh.operands.push_back(loc.bracketedHigh());
     output.push_back(loadHigh);
 }
 
@@ -502,12 +542,12 @@ void StackFrame::emitStore32(std::vector<Instruction286>& output,
                               const std::string& vregName,
                               const std::string& lowReg,
                               const std::string& highReg) const {
-    std::string bpOffset = getBpOffset(vregName);
+    Location loc = getPhysRegLoc(vregName);
 
     // Store low word
     Instruction286 storeLow;
     storeLow.mnemonic = "mov";
-    storeLow.operands.push_back("[" + bpOffset + "]");
+    storeLow.operands.push_back(loc.bracketed());
     storeLow.operands.push_back(lowReg);
     output.push_back(storeLow);
 
@@ -515,16 +555,7 @@ void StackFrame::emitStore32(std::vector<Instruction286>& output,
     Instruction286 storeHigh;
     storeHigh.mnemonic = "mov";
     storeHigh.operands.push_back(highReg);
-
-    if (bpOffset.find("bp") != std::string::npos) {
-        // Stack location - compute high word offset
-        std::string highOffset = getHighBpOffset(vregName);
-        storeHigh.operands.push_back("[" + highOffset + "]");
-    } else {
-        // Register - just use reg+2
-        storeHigh.operands.push_back("[" + bpOffset + "+2]");
-    }
-
+    storeHigh.operands.push_back(loc.bracketedHigh());
     output.push_back(storeHigh);
 }
 

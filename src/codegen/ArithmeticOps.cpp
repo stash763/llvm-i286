@@ -40,19 +40,18 @@ std::vector<LoweredInstruction> lowerAdd(SelectorState& state,
             // Mark result as 32-bit
             // 32-bit tracking now in StackFrame
 
-           // Check if op1 is a constant
-            bool op1IsConst = state.frame.classifyOperand(op1Name) == StackFrame::OperandKind::Constant;
+            // Check if op1 is a constant
+            bool op1IsConst = irInst.operands[0].ref.isConstant();
             std::string op1Stack;
             if (!op1IsConst) {
                 op1Stack = state.frame.getPhysReg(op1Name);
             }
 
             // Check if op2 is a vreg (exists in state maps)
-            bool op2IsVreg = state.frame.hasSlot(op2Name) ||
-                             state.frame.hasSlot(op2Name);
-            
+            bool op2IsVreg = state.frame.hasSlot(op2Name);
+
             // Check if op2 is a constant (only if not a vreg)
-            bool op2IsConst = !op2IsVreg && state.frame.classifyOperand(op2Name) == StackFrame::OperandKind::Constant;
+            bool op2IsConst = !op2IsVreg && irInst.operands[1].ref.isConstant();
             std::string op2Stack;
             if (!op2IsConst) {
                 op2Stack = state.frame.getPhysReg(op2Name);
@@ -62,7 +61,7 @@ std::vector<LoweredInstruction> lowerAdd(SelectorState& state,
             Instruction286 loadLow;
             loadLow.mnemonic = "mov";
             if (op1IsConst) {
-                int64_t constVal = std::stoll(op1Name);
+                int64_t constVal = irInst.operands[0].ref.constValue;
                 loadLow.operands.push_back("ax");
                 loadLow.operands.push_back(std::to_string(constVal & 0xFFFF));
             } else {
@@ -76,7 +75,7 @@ std::vector<LoweredInstruction> lowerAdd(SelectorState& state,
             loadHigh.mnemonic = "mov";
             loadHigh.operands.push_back("bx");
             if (op1IsConst) {
-                int64_t constVal = std::stoll(op1Name);
+                int64_t constVal = irInst.operands[0].ref.constValue;
                 int16_t highWord = (constVal >> 16) & 0xFFFF;
                 loadHigh.operands.push_back(std::to_string(highWord));
             } else {
@@ -102,7 +101,7 @@ std::vector<LoweredInstruction> lowerAdd(SelectorState& state,
             Instruction286 loadOp2Low;
             loadOp2Low.mnemonic = "mov";
             if (op2IsConst) {
-                int64_t constVal = std::stoll(op2Name);
+                int64_t constVal = irInst.operands[1].ref.constValue;
                 loadOp2Low.operands.push_back("cx");
                 loadOp2Low.operands.push_back(std::to_string(constVal & 0xFFFF));
             } else {
@@ -114,7 +113,7 @@ std::vector<LoweredInstruction> lowerAdd(SelectorState& state,
             Instruction286 loadOp2High;
             loadOp2High.mnemonic = "mov";
             if (op2IsConst) {
-                int64_t constVal = std::stoll(op2Name);
+                int64_t constVal = irInst.operands[1].ref.constValue;
                 int16_t highWord = (constVal >> 16) & 0xFFFF;
                 loadOp2High.operands.push_back("dx");
                 loadOp2High.operands.push_back(std::to_string(highWord));
@@ -188,14 +187,8 @@ std::vector<LoweredInstruction> lowerAdd(SelectorState& state,
             bool op2IsVreg = (state.frame.hasSlot(op2Name));
 
             // Check if operands are constants (not vregs)
-            bool op1IsConst = false;
-            bool op2IsConst = false;
-            if (!op1IsVreg) {
-                try { std::stoi(op1Name); op1IsConst = true; } catch (...) {}
-            }
-            if (!op2IsVreg) {
-                try { std::stoi(op2Name); op2IsConst = true; } catch (...) {}
-            }
+            bool op1IsConst = !op1IsVreg && irInst.operands[0].ref.isConstant();
+            bool op2IsConst = !op2IsVreg && irInst.operands[1].ref.isConstant();
 
             std::string op1 = op1IsConst ? op1Name : state.frame.getPhysReg(op1Name);
             std::string op2 = op2IsConst ? op2Name : state.frame.getPhysReg(op2Name);
@@ -287,7 +280,7 @@ std::vector<LoweredInstruction> lowerSub(SelectorState& state,
             std::string op1Stack = state.frame.getPhysReg(op1Name);
 
             // Check if op2 is a constant
-            bool op2IsConst = state.frame.classifyOperand(op2Name) == StackFrame::OperandKind::Constant;
+            bool op2IsConst = irInst.operands[1].ref.isConstant();
             std::string op2Stack;
             if (!op2IsConst) {
                 op2Stack = state.frame.getPhysReg(op2Name);
@@ -325,7 +318,7 @@ std::vector<LoweredInstruction> lowerSub(SelectorState& state,
             Instruction286 loadOp2Low;
             loadOp2Low.mnemonic = "mov";
             if (op2IsConst) {
-                int64_t constVal = std::stoll(op2Name);
+                int64_t constVal = irInst.operands[1].ref.constValue;
                 loadOp2Low.operands.push_back("cx");
                 loadOp2Low.operands.push_back(std::to_string(constVal & 0xFFFF));
             } else {
@@ -337,7 +330,7 @@ std::vector<LoweredInstruction> lowerSub(SelectorState& state,
             Instruction286 loadOp2High;
             loadOp2High.mnemonic = "mov";
             if (op2IsConst) {
-                int64_t constVal = std::stoll(op2Name);
+                int64_t constVal = irInst.operands[1].ref.constValue;
                 int16_t highWord = (constVal >> 16) & 0xFFFF;
                 loadOp2High.operands.push_back("dx");
                 loadOp2High.operands.push_back(std::to_string(highWord));
@@ -412,14 +405,8 @@ std::vector<LoweredInstruction> lowerSub(SelectorState& state,
             bool op2IsVreg = (state.frame.hasSlot(op2Name));
 
             // Check if operands are constants (not vregs)
-            bool op1IsConst = false;
-            bool op2IsConst = false;
-            if (!op1IsVreg) {
-                try { std::stoi(op1Name); op1IsConst = true; } catch (...) {}
-            }
-            if (!op2IsVreg) {
-                try { std::stoi(op2Name); op2IsConst = true; } catch (...) {}
-            }
+            bool op1IsConst = !op1IsVreg && irInst.operands[0].ref.isConstant();
+            bool op2IsConst = !op2IsVreg && irInst.operands[1].ref.isConstant();
 
             std::string op1 = op1IsConst ? op1Name : state.frame.getPhysReg(op1Name);
             std::string op2 = op2IsConst ? op2Name : state.frame.getPhysReg(op2Name);
@@ -624,13 +611,15 @@ std::vector<LoweredInstruction> lowerMul(SelectorState& state,
         bool op1IsConst = false, op2IsConst = false;
         std::string op1ConstVal, op2ConstVal;
         if (irInst.operands.size() >= 2) {
-            try { std::stoi(irInst.operands[0].name); op1IsConst = true; op1ConstVal = irInst.operands[0].name; } catch (...) {}
-            try { std::stoi(irInst.operands[1].name); op2IsConst = true; op2ConstVal = irInst.operands[1].name; } catch (...) {}
+            op1IsConst = irInst.operands[0].ref.isConstant();
+            op1ConstVal = op1IsConst ? irInst.operands[0].name : "";
+            op2IsConst = irInst.operands[1].ref.isConstant();
+            op2ConstVal = op2IsConst ? irInst.operands[1].name : "";
         }
 
         if (op1IsConst && op2IsConst) {
             // Both constants: compute at compile time
-            int result = std::stoi(op1ConstVal) * std::stoi(op2ConstVal);
+            int result = (int)(irInst.operands[0].ref.constValue * irInst.operands[1].ref.constValue);
             Instruction286 movConst;
             movConst.mnemonic = "mov";
             movConst.operands.push_back("ax");
@@ -777,9 +766,8 @@ std::vector<LoweredInstruction> lowerDivRem(SelectorState& state,
 
             // Load divisor low word to CX, high word to DX
             // Check if divisor is a constant
-            bool divisorIsConst = false;
-            int64_t divisorConstVal = 0;
-            try { divisorConstVal = std::stoll(divisorName); divisorIsConst = true; } catch (...) {}
+            bool divisorIsConst = irInst.operands[1].ref.isConstant();
+            int64_t divisorConstVal = divisorIsConst ? irInst.operands[1].ref.constValue : 0;
 
             if (divisorIsConst) {
                 // Load constant divisor to CX:DX

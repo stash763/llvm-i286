@@ -3,8 +3,6 @@
 
 #include "codegen/Emitter.h"
 #include "codegen/NasmSafe.h"
-#include <set>
-#include <map>
 
 namespace llvm_i286 {
 namespace codegen {
@@ -51,44 +49,6 @@ std::string Emitter::emitLoweredInstruction(const LoweredInstruction& lowered) {
     return output;
 }
 
-// Pass to handle duplicate labels (workaround for IR parser bug
-// that duplicates basic blocks with !llvm.loop metadata)
-static std::vector<LoweredInstruction> deduplicateLabels(
-    const std::vector<LoweredInstruction>& instructions,
-    const std::string& funcName) {
-    // First pass: collect label indices (position -> instruction list index)
-    // and find which labels are duplicated
-    std::map<std::string, std::vector<size_t>> labelIndices;
-    for (size_t i = 0; i < instructions.size(); i++) {
-        if (!instructions[i].label.empty()) {
-            labelIndices[instructions[i].label].push_back(i);
-        }
-    }
-    
-    // Find which duplicate label should be discarded.
-    // When a label appears twice due to !llvm.loop, the first occurrence
-    // is a stray loop header (typically `label: jmp label` - a single
-    // self-jump) and the second is the real code. We keep the real code.
-    std::set<size_t> skipIndices;
-    for (const auto& [label, indices] : labelIndices) {
-        if (indices.size() <= 1) continue;
-        
-        // Skip all occurrences except the LAST one (which has the real code)
-        for (size_t k = 0; k + 1 < indices.size(); k++) {
-            skipIndices.insert(indices[k]);
-        }
-    }
-    
-    // Second pass: emit non-skipped instructions
-    std::vector<LoweredInstruction> result;
-    for (size_t i = 0; i < instructions.size(); i++) {
-        if (skipIndices.count(i)) continue;
-        result.push_back(instructions[i]);
-    }
-    
-    return result;
-}
-
 std::string Emitter::emitFunction(const std::vector<LoweredInstruction>& instructions,
                                   const std::string& funcName,
                                   int frameSize,
@@ -111,11 +71,8 @@ std::string Emitter::emitFunction(const std::vector<LoweredInstruction>& instruc
         output += "  sub sp, " + std::to_string(frameSize) + "\n";
     }
     
-    // Deduplicate labels (workaround for IR parser !llvm.loop metadata bug)
-    auto deduped = deduplicateLabels(instructions, funcName);
-    
     // Emit instructions (RetTerm from instruction selector includes epilogue and ret)
-    for (const auto& lowered : deduped) {
+    for (const auto& lowered : instructions) {
         // Skip the function label since we already emitted it
         if (lowered.label == funcName) continue;
         output += emitLoweredInstruction(lowered);

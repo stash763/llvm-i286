@@ -173,7 +173,7 @@ syscall_getpid:
 syscall_exit:
     mov ax, [bp+10]      ; exit code (low word of a1)
     
-    push 0               ; action = 0 (terminate process)
+    push 1               ; action = 1 (EXIT_PROCESS)
     push ax              ; return code
     call far DOSEXIT
     ; DOSEXIT does not return

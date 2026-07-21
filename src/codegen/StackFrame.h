@@ -11,6 +11,7 @@
 #define LLVM_I286_CODEGEN_STACK_FRAME_H
 
 #include "codegen/InstructionSelect.h"
+#include "codegen/Location.h"
 
 #include <string>
 #include <vector>
@@ -88,6 +89,9 @@ public:
     // This is bp offset + 2 for stack locations, or just reg+2 for registers
     std::string getHighBpOffset(const std::string& vregName) const;
 
+    // Location-based version: returns the high-word Location for a vreg
+    Location getHighBpOffsetLoc(const std::string& vregName) const;
+
     // Get the size of a vreg's slot in bytes
     int getSlotSize(const std::string& vregName) const;
 
@@ -131,6 +135,9 @@ public:
 
     // Get physical register for a vreg (register or stack location)
     std::string getPhysReg(const std::string& vregName) const;
+
+    // Location-based version: returns typed Location instead of string
+    Location getPhysRegLoc(const std::string& vregName) const;
 
     // Set the physical register for a vreg
     void setPhysReg(const std::string& vregName, const std::string& reg);

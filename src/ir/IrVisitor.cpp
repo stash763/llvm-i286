@@ -199,7 +199,52 @@ std::unique_ptr<Module> IrVisitor::visitModule(LLVMIRParser::CompilationUnitCont
             }
         }
     }
-    
+
+    // Post-processing pass: populate OperandRef from raw name strings
+    // This is the single source of truth for operand classification,
+    // replacing 180+ string prefix checks scattered across codegen handlers.
+    for (auto& func : currentModule->functions) {
+        for (auto& bb : func->basicBlocks) {
+            for (auto& inst : bb->instructions) {
+                // Classify operands
+                for (auto& op : inst->operands) {
+                    if (!op.name.empty()) {
+                        op.ref = classifyOperand(op.name);
+                    }
+                }
+                // Classify call args
+                for (size_t i = 0; i < inst->callArgs.size(); i++) {
+                    if (i < inst->callArgRefs.size()) continue;
+                    inst->callArgRefs.push_back(classifyOperand(inst->callArgs[i]));
+                }
+                // Classify callee
+                if (!inst->calleeName.empty() && inst->calleeRef.kind == OperandRef::Kind::Unknown) {
+                    inst->calleeRef = classifyOperand(inst->calleeName);
+                }
+                // Classify phi increments
+                for (auto& inc : inst->phiIncrements) {
+                    if (!inc.value.empty() && inc.valueRef.kind == OperandRef::Kind::Unknown) {
+                        inc.valueRef = classifyOperand(inc.value);
+                    }
+                }
+                // Classify switch cases
+                for (auto& sc : inst->switchCases) {
+                    if (!sc.value.empty() && sc.valueRef.kind == OperandRef::Kind::Unknown) {
+                        sc.valueRef = classifyOperand(sc.value);
+                    }
+                }
+            }
+            // Also classify terminator operands if present
+            if (bb->terminator) {
+                for (auto& op : bb->terminator->operands) {
+                    if (!op.name.empty()) {
+                        op.ref = classifyOperand(op.name);
+                    }
+                }
+            }
+        }
+    }
+
     return std::move(currentModule);
 }
 

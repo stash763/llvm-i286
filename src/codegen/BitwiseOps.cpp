@@ -33,16 +33,14 @@ static std::vector<LoweredInstruction> lowerBinaryOp(
         std::string op2Name = irInst.operands[1].name;
 
         // Check if operands are vregs (exist in state maps)
-        bool op1IsVreg = state.frame.hasSlot(op1Name) ||
-                         state.frame.hasSlot(op1Name);
-        bool op2IsVreg = state.frame.hasSlot(op2Name) ||
-                         state.frame.hasSlot(op2Name);
+        bool op1IsVreg = state.frame.hasSlot(op1Name);
+        bool op2IsVreg = state.frame.hasSlot(op2Name);
 
         // Check if operands are constants (only if not vregs)
-        bool op2IsConst = !op2IsVreg && isConstantInt(op2Name);
+        bool op2IsConst = !op2IsVreg && irInst.operands[1].ref.isConstant();
         bool op2IsMem = false;
 
-        op1IsConst = !op1IsVreg && isConstantInt(op1Name);
+        op1IsConst = !op1IsVreg && irInst.operands[0].ref.isConstant();
         op1 = op1IsConst ? op1Name : state.frame.getPhysReg(op1Name);
         std::string op2 = op2IsConst ? op2Name : state.frame.getPhysReg(op2Name);
 
@@ -83,8 +81,7 @@ static std::vector<LoweredInstruction> lowerBinaryOp(
         } else if (op2IsConst) {
             // Check if this is a 32-bit operation or the constant does not fit in 16 bits
             bool is32 = irInst.resultType && irInst.resultType->bitWidth == 32;
-            int64_t constVal = 0;
-            try { constVal = std::stoll(op2Name); } catch (...) {}
+            int64_t constVal = irInst.operands[1].ref.isConstant() ? irInst.operands[1].ref.constValue : 0;
             bool needsSplit = is32 || constVal > 0xFFFFLL || constVal < -32768LL;
             if (needsSplit) {
                 // Split into low and high word operations
@@ -193,10 +190,10 @@ static std::vector<LoweredInstruction> lowerShiftOp(
         std::string op2Name = irInst.operands[1].name;
 
         bool op2IsVreg = state.frame.hasSlot(op2Name);
-        bool op2IsConst = !op2IsVreg && isConstantInt(op2Name);
+        bool op2IsConst = !op2IsVreg && irInst.operands[1].ref.isConstant();
         int shiftAmt = 0;
         if (op2IsConst) {
-            try { shiftAmt = std::stoi(op2Name); } catch (...) {}
+            shiftAmt = (int)irInst.operands[1].ref.constValue;
         }
 
         std::string srcReg = state.frame.getPhysReg(op1Name);
@@ -565,15 +562,13 @@ static std::vector<LoweredInstruction> lowerShiftOp(
         std::string op2Name = irInst.operands[1].name;
 
         // Check if operands are vregs
-        bool op1IsVreg = state.frame.hasSlot(op1Name) ||
-                         state.frame.hasSlot(op1Name);
-        bool op2IsVreg = state.frame.hasSlot(op2Name) ||
-                         state.frame.hasSlot(op2Name);
+        bool op1IsVreg = state.frame.hasSlot(op1Name);
+        bool op2IsVreg = state.frame.hasSlot(op2Name);
 
         // Check if operands are constants (only if not vregs)
-        bool op2IsConst = !op2IsVreg && isConstantInt(op2Name);
+        bool op2IsConst = !op2IsVreg && irInst.operands[1].ref.isConstant();
 
-        op1IsConst = !op1IsVreg && isConstantInt(op1Name);
+        op1IsConst = !op1IsVreg && irInst.operands[0].ref.isConstant();
         op1 = op1IsConst ? op1Name : state.frame.getPhysReg(op1Name);
         op2 = op2IsConst ? op2Name : state.frame.getPhysReg(op2Name);
 

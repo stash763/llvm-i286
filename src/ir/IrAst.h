@@ -8,6 +8,7 @@
 #include <vector>
 #include <memory>
 #include <map>
+#include "ir/OperandRef.h"
 
 namespace llvm_i286 {
 namespace ir {
@@ -157,7 +158,8 @@ enum class Opcode {
 struct Operand {
     std::unique_ptr<Value> value;
     std::unique_ptr<Type> type;
-    std::string name; // For basic block labels in br/phi
+    std::string name; // For basic block labels in br/phi (legacy)
+    OperandRef ref;   // Typed operand representation (new)
 };
 
 struct Instruction {
@@ -182,19 +184,23 @@ struct Instruction {
     struct PhiInc {
         std::string value;
         std::string label;
+        OperandRef valueRef; // Typed (new)
     };
     std::vector<PhiInc> phiIncrements;
-    
+
     // For switch
     struct SwitchCase {
         std::string value;
         std::string label;
+        OperandRef valueRef; // Typed (new)
     };
     std::vector<SwitchCase> switchCases;
-    
+
     // For call
     std::string calleeName;
+    OperandRef calleeRef; // Typed callee (new)
     std::vector<std::string> callArgs;
+    std::vector<OperandRef> callArgRefs; // Typed call args (new)
     // Track whether each call arg is a pointer (true) or value (false)
     std::vector<bool> callArgKinds; // true = pointer, false = value
     
