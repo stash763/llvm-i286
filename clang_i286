@@ -316,10 +316,13 @@ done
 if [ "$MODE" = "exe" ] && [ ${#OBJ_FILES[@]} -gt 0 ]; then
     vmsg "wlink: linking ${#OBJ_FILES[@]} object(s) -> $OUTPUT_FILE"
 
-    # Build wlink arguments
+   # Build wlink arguments
+    # Generate a map file alongside the executable for debugger symbol mapping
+    MAP_FILE="${OUTPUT_FILE%.exe}.map"
     WLINK_ARGS=(
         "system" "os2"
         "d" "all"
+        "option" "map=$MAP_FILE"
         "path" "$WATCOM_DIR/lib286"
         "library" "$WATCOM_DIR/lib286/os2/os2.lib"
     )
